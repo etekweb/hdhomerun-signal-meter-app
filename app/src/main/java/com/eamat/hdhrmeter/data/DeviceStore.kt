@@ -45,10 +45,25 @@ class DeviceStore(context: Context) {
             .apply()
     }
 
+    /** Guide numbers newest-first. One list per tuner, because lineups differ. */
+    fun loadRecentChannels(deviceId: String): List<String> {
+        val raw = prefs.getString(recentChannelsKey(deviceId), null) ?: return emptyList()
+        return raw.lineSequence().filter { it.isNotEmpty() }.toList()
+    }
+
+    fun saveRecentChannels(deviceId: String, guideNumbers: List<String>) {
+        prefs.edit()
+            .putString(recentChannelsKey(deviceId), guideNumbers.joinToString("\n"))
+            .apply()
+    }
+
+    private fun recentChannelsKey(deviceId: String) = "$KEY_RECENT_CHANNELS$deviceId"
+
     private companion object {
         const val PREFS = "hdhr_meter"
         const val KEY_HOST = "manual_host"
         const val KEY_GUIDE_HOST = "guide_host"
+        const val KEY_RECENT_CHANNELS = "recent_channels_"
         const val KEY_ID = "device_id"
         const val KEY_NAME = "device_name"
         const val KEY_MODEL = "device_model"

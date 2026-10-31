@@ -1,5 +1,6 @@
 package com.eamat.hdhrmeter.ui
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -38,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import com.eamat.hdhrmeter.data.Channel
 import com.eamat.hdhrmeter.data.GuideProgram
 import com.eamat.hdhrmeter.data.HdhrDevice
+import com.eamat.hdhrmeter.data.channelsInViewOrder
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,7 +54,7 @@ fun ChannelsScreen(
     onWatch: (Channel) -> Unit,
 ) {
     val query = state.query.trim()
-    val shown = state.channels.filter { channel ->
+    val matched = state.channels.filter { channel ->
         val matchesQuery = query.isBlank() ||
             channel.guideNumber.contains(query, ignoreCase = true) ||
             channel.guideName.contains(query, ignoreCase = true)
@@ -59,8 +62,14 @@ fun ChannelsScreen(
             ChannelFilter.All -> true
             ChannelFilter.Hd -> channel.hd || channel.atsc3
             ChannelFilter.Favorites -> channel.favorite
+            ChannelFilter.Recents -> true
         }
         matchesQuery && matchesFilter
+    }
+    val shown = if (state.filter == ChannelFilter.Recents) {
+        channelsInViewOrder(matched, state.recentChannels)
+    } else {
+        matched
     }
     Scaffold(
         containerColor = Ink,
@@ -119,13 +128,18 @@ fun ChannelsScreen(
                 placeholder = { Text("Search channels") },
             )
             Row(
-                modifier = Modifier.padding(horizontal = 16.dp),
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 FilterChoice("All", state.filter == ChannelFilter.All) { onFilter(ChannelFilter.All) }
                 FilterChoice("HD", state.filter == ChannelFilter.Hd) { onFilter(ChannelFilter.Hd) }
                 FilterChoice("Favorites", state.filter == ChannelFilter.Favorites) {
                     onFilter(ChannelFilter.Favorites)
+                }
+                FilterChoice("Recents", state.filter == ChannelFilter.Recents) {
+                    onFilter(ChannelFilter.Recents)
                 }
             }
             Text(
@@ -144,8 +158,13 @@ fun ChannelsScreen(
             }
             when {
                 shown.isEmpty() && !state.channelsLoading && state.channelsError == null -> {
+                    val emptyLabel = if (state.filter == ChannelFilter.Recents && query.isBlank()) {
+                        "No recently viewed channels."
+                    } else {
+                        "No channels match."
+                    }
                     Text(
-                        "No channels match.",
+                        emptyLabel,
                         color = Muted,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                     )

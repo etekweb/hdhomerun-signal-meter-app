@@ -7,7 +7,7 @@ The phone and the HDHomeRun need to be on the same LAN. The app uses the tunerâ€
 ## What you can do
 
 - Scan the network, or type an IP address or hostname.
-- Open the channel lineup. Search, and filter to HD or favorites. Copy-protected channels are listed and marked Protected. They are not played.
+- Open the channel lineup. Search, and filter to HD, favorites, or recently viewed channels. Recents lists channels you have started watching, newest first, and keeps that list for each tuner. Copy-protected channels are listed and marked Protected. They are not played.
 - Set a guide provider by IP address. The app reads `http://<address>:8080/xmlguide.xmltv` and shows the program on now in the channel lineup and on the player.
 - Watch a channel. The stream stops when you leave the player, so the tuner is free for something else. Pressing Home while a channel is playing moves the picture into the system picture-in-picture window and keeps the tuner. Closing that window releases the tuner. Resume tunes it again.
 - Read the overlay while a channel is playing:
@@ -18,7 +18,7 @@ The phone and the HDHomeRun need to be on the same LAN. The app uses the tunerâ€
   - Live bitrate of the program being received
   - RF rate, which is the whole channelâ€™s bitrate reported by the tuner, not the video bitrate
 
-Tap the picture to hide the overlay. Channel up and down skip protected channels.
+Tap the picture to hide the overlay. Channel up and down skip protected channels. Each tap shows the channel you would land on in the center of the picture. Tuning waits half a second, and another tap restarts that wait, so you can move several channels without loading each one.
 
 Quality is the number to aim. Symbol should stay at 100%. Strength matters less.
 

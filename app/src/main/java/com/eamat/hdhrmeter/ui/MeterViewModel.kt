@@ -8,10 +8,12 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.eamat.hdhrmeter.data.Channel
 import com.eamat.hdhrmeter.data.DeviceStore
+import com.eamat.hdhrmeter.data.previewHop
 import com.eamat.hdhrmeter.data.GuideIndex
 import com.eamat.hdhrmeter.data.HdhrClient
 import com.eamat.hdhrmeter.data.HdhrDevice
 import com.eamat.hdhrmeter.data.SignalReading
+import com.eamat.hdhrmeter.data.rememberViewedChannel
 import com.eamat.hdhrmeter.data.guideUrlForInput
 import com.eamat.hdhrmeter.data.hostOf
 import com.eamat.hdhrmeter.data.isIdle
@@ -35,7 +37,10 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-enum class ChannelFilter { All, Hd, Favorites }
+/** Quiet time after the last channel tap before the tuner is changed. */
+private const val CHANNEL_HOP_MS = 500L
+
+enum class ChannelFilter { All, Hd, Favorites, Recents }
 
 enum class PlaybackPhase { Idle, Tuning, Buffering, Ready }
 
@@ -82,6 +87,8 @@ data class UiState(
     val channelsError: String? = null,
     val query: String = "",
     val filter: ChannelFilter = ChannelFilter.All,
+    val recentChannels: List<String> = emptyList(),
+    val pendingChannel: Channel? = null,
     val signal: SignalReading? = null,
     val peaks: SignalPeaks = SignalPeaks(),
     val signalNote: String? = null,
@@ -114,7 +121,9 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private var guideGeneration = 0
     private var playJob: Job? = null
     private var pollJob: Job? = null
+    private var hopJob: Job? = null
     private var playGeneration = 0
+    private var hopGeneration = 0
     private var preferredTuner: Int? = null
     private var localIp: String? = null
     private var usingSpecificTuner = false
@@ -247,6 +256,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 channelsLoading = true,
                 channelsError = null,
                 query = "",
+                recentChannels = store.loadRecentChannels(device.deviceId),
             )
         }
         loadLineup(device, keepExisting = false)
@@ -278,12 +288,14 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             }
             return
         }
+        cancelChannelHop()
         _ui.update {
             it.copy(
                 screen = Screen.Watch(device, channel),
                 channelsError = null,
                 overlayVisible = true,
                 transcoding = false,
+                pendingChannel = null,
             )
         }
         tune(device, channel, transcode = false, forceAuto = false)
@@ -291,25 +303,52 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
 
     fun tryTranscode() {
         val screen = _ui.value.screen as? Screen.Watch ?: return
-        _ui.update { it.copy(transcoding = true) }
+        cancelChannelHop()
+        _ui.update { it.copy(transcoding = true, pendingChannel = null) }
         tune(screen.device, screen.channel, transcode = true, forceAuto = false)
     }
 
     fun resume() {
         val screen = _ui.value.screen as? Screen.Watch ?: return
+        cancelChannelHop()
         tune(screen.device, screen.channel, transcode = _ui.value.transcoding, forceAuto = false)
     }
 
     fun stepChannel(delta: Int) {
         val screen = _ui.value.screen as? Screen.Watch ?: return
-        val list = _ui.value.channels.filter { !it.drm }
-        if (list.isEmpty()) return
-        val index = list.indexOfFirst {
-            it.guideNumber == screen.channel.guideNumber && it.streamUrl == screen.channel.streamUrl
+        val next = previewHop(_ui.value.channels, screen.channel, _ui.value.pendingChannel, delta)
+        val generation = ++hopGeneration
+        hopJob?.cancel()
+        if (next == null) {
+            _ui.update { state ->
+                if (state.pendingChannel == null) state else state.copy(pendingChannel = null)
+            }
+            return
         }
-        val next = if (index < 0) 0 else Math.floorMod(index + delta, list.size)
-        _ui.update { it.copy(screen = Screen.Watch(screen.device, list[next]), transcoding = false) }
-        tune(screen.device, list[next], transcode = false, forceAuto = false)
+        val device = screen.device
+        _ui.update { it.copy(pendingChannel = next) }
+        hopJob = viewModelScope.launch {
+            delay(CHANNEL_HOP_MS)
+            if (generation != hopGeneration) return@launch
+            _ui.update { state ->
+                val watching = state.screen as? Screen.Watch
+                if (watching == null || state.pendingChannel == null || generation != hopGeneration) {
+                    state
+                } else {
+                    state.copy(
+                        pendingChannel = null,
+                        screen = Screen.Watch(watching.device, next),
+                        transcoding = false,
+                    )
+                }
+            }
+            if (generation != hopGeneration) return@launch
+            val watching = _ui.value.screen as? Screen.Watch ?: return@launch
+            if (watching.channel.guideNumber != next.guideNumber || watching.channel.streamUrl != next.streamUrl) {
+                return@launch
+            }
+            tune(device, next, transcode = false, forceAuto = false)
+        }
     }
 
     fun toggleOverlay() {
@@ -333,6 +372,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     fun onBack() {
         when (val screen = _ui.value.screen) {
             is Screen.Watch -> {
+                cancelChannelHop()
                 stopPlayback()
                 _ui.update {
                     it.copy(
@@ -342,6 +382,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                         signalNote = null,
                         tunerReleased = false,
                         offerTranscode = false,
+                        pendingChannel = null,
                     )
                 }
             }
@@ -352,6 +393,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onHostStop() {
         if (_ui.value.screen !is Screen.Watch || _ui.value.tunerReleased) return
+        cancelChannelHop()
         stopPlayback()
         _ui.update {
             it.copy(
@@ -359,6 +401,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 phase = PlaybackPhase.Idle,
                 signal = null,
                 playbackError = null,
+                pendingChannel = null,
             )
         }
     }
@@ -366,6 +409,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         guideJob?.cancel()
         guideClockJob?.cancel()
+        hopJob?.cancel()
         stopPlayback()
         engine.release()
     }
@@ -462,6 +506,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun tune(device: HdhrDevice, channel: Channel, transcode: Boolean, forceAuto: Boolean) {
+        rememberViewed(device.deviceId, channel.guideNumber)
         if (!forceAuto) autoRetried = false
         val generation = ++playGeneration
         playJob?.cancel()
@@ -557,6 +602,23 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         val text = index?.let { client.tunerText(device, it) }
         if (chosen == null && text == null) return null
         return mergeSignal(chosen, text, channel.frequencyHz)
+    }
+
+    private fun cancelChannelHop() {
+        hopGeneration++
+        hopJob?.cancel()
+        hopJob = null
+        if (_ui.value.pendingChannel != null) {
+            _ui.update { it.copy(pendingChannel = null) }
+        }
+    }
+
+    private fun rememberViewed(deviceId: String, guideNumber: String) {
+        val current = _ui.value.recentChannels
+        val next = rememberViewedChannel(current, guideNumber)
+        if (next == current) return
+        store.saveRecentChannels(deviceId, next)
+        _ui.update { it.copy(recentChannels = next) }
     }
 
     private fun stopPlayback() {

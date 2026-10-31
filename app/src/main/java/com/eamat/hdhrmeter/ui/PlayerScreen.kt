@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -47,6 +48,7 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -157,6 +159,15 @@ fun PlayerScreen(
                 )
             }
         }
+        if (showChrome) {
+            state.pendingChannel?.let { pending ->
+                ChannelHopCard(
+                    channel = pending,
+                    program = state.guide?.airing(pending.guideNumber, pending.guideName, state.guideNowMs),
+                    modifier = Modifier.align(Alignment.Center),
+                )
+            }
+        }
     }
 }
 
@@ -209,6 +220,61 @@ private fun SignalOverlay(
                 )
                 NoticeBlock(state, onTranscode, onResume, Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
                 Transport(state, onStep)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChannelHopCard(channel: Channel, program: GuideProgram?, modifier: Modifier = Modifier) {
+    val programTitle = program?.title?.takeIf { title ->
+        title.isNotBlank() && !title.equals(channel.guideName, ignoreCase = true)
+    }
+    Surface(
+        color = Color(0xE612181D),
+        shape = RoundedCornerShape(16.dp),
+        modifier = modifier
+            .padding(horizontal = 32.dp)
+            .widthIn(max = 440.dp)
+            .fillMaxWidth(0.86f)
+            .holdClicks(),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 28.dp, vertical = 22.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                "Switching to",
+                color = Muted,
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                channel.guideNumber,
+                color = Amber,
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.displaySmall,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                channel.guideName,
+                color = Paper,
+                style = MaterialTheme.typography.titleLarge,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (programTitle != null) {
+                Text(
+                    programTitle,
+                    color = Paper,
+                    style = MaterialTheme.typography.titleMedium,
+                    textAlign = TextAlign.Center,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         }
     }
