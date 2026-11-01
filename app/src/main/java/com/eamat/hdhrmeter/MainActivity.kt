@@ -13,6 +13,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.calculateEndPadding
@@ -29,11 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.eamat.hdhrmeter.ui.ChannelsScreen
 import com.eamat.hdhrmeter.ui.DevicesScreen
 import com.eamat.hdhrmeter.ui.HdhrTheme
@@ -42,6 +39,7 @@ import com.eamat.hdhrmeter.ui.PlayerScreen
 import com.eamat.hdhrmeter.ui.Screen
 
 class MainActivity : ComponentActivity() {
+    private val viewModel: MeterViewModel by viewModels()
     private val supportsPip by lazy(LazyThreadSafetyMode.NONE) {
         packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
     }
@@ -58,7 +56,6 @@ class MainActivity : ComponentActivity() {
         inPip = isInPictureInPictureMode
         enableEdgeToEdge()
         setContent {
-            val viewModel: MeterViewModel = viewModel()
             val state by viewModel.ui.collectAsStateWithLifecycle()
             val watch = state.screen as? Screen.Watch
             val keepScreenOn = watch != null &&
@@ -119,18 +116,6 @@ class MainActivity : ComponentActivity() {
                     window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 }
             }
-            val lifecycleOwner = LocalLifecycleOwner.current
-            DisposableEffect(lifecycleOwner, viewModel) {
-                val observer = LifecycleEventObserver { _, event ->
-                    // PiP stays started, so Home does not take this path. Closing the
-                    // window stops the activity and releases the tuner.
-                    if (event == Lifecycle.Event.ON_STOP && !isInPictureInPictureMode) {
-                        viewModel.onHostStop()
-                    }
-                }
-                lifecycleOwner.lifecycle.addObserver(observer)
-                onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-            }
             BackHandler(enabled = state.screen !is Screen.Devices) {
                 viewModel.onBack()
             }
@@ -153,6 +138,7 @@ class MainActivity : ComponentActivity() {
                         onQuery = viewModel::setQuery,
                         onFilter = viewModel::setFilter,
                         onWatch = viewModel::watch,
+                        onReturnScrollHandled = viewModel::consumeReturnChannel,
                     )
                     is Screen.Watch -> PlayerScreen(
                         state = state,
@@ -169,6 +155,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onStop() {
+        // Home leaves the activity started in the picture-in-picture window, so
+        // this is not that path. Closing the window stops the activity while
+        // isInPictureInPictureMode is still true; the flag changes only after
+        // onStop. Release the tuner here, or playback continues until the
+        // system freezes the process.
+        viewModel.onHostStop()
+        super.onStop()
     }
 
     override fun onUserLeaveHint() {

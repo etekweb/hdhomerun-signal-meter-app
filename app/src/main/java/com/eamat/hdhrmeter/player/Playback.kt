@@ -7,6 +7,8 @@ import com.eamat.hdhrmeter.data.StreamFailure
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
@@ -49,10 +51,15 @@ class PlaybackEngine(context: Context) {
     private val lib: LibVLC?
     private val player: MediaPlayer?
     private val unavailable: String?
-    private var pendingUrl: String? = null
-    private var playingUrl: String? = null
-    private var attachedLayout: VLCVideoLayout? = null
-    private var ignoreNextStop = false
+    private val commands = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "hdhr-playback").apply { isDaemon = true }
+    }
+    private val commandGeneration = AtomicInteger(0)
+
+    @Volatile private var pendingUrl: String? = null
+    @Volatile private var playingUrl: String? = null
+    @Volatile private var attachedLayout: VLCVideoLayout? = null
+    @Volatile private var ignoreNextStop = false
 
     init {
         val created = runCatching { openLibVlc() }
@@ -82,7 +89,8 @@ class PlaybackEngine(context: Context) {
         _error.value = null
         _stats.value = VideoStats()
         _phase.value = EnginePhase.Buffering
-        startLocked(mediaPlayer)
+        runCatching { mediaPlayer.volume = 100 }
+        enqueueStart()
     }
 
     fun attach(layout: VLCVideoLayout) {
@@ -93,7 +101,7 @@ class PlaybackEngine(context: Context) {
             mediaPlayer.attachViews(layout, null, false, true)
             mediaPlayer.videoScale = MediaPlayer.ScaleType.SURFACE_BEST_FIT
             attachedLayout = layout
-            startLocked(mediaPlayer)
+            enqueueStart()
         } catch (error: RuntimeException) {
             Log.e(TAG, "Could not attach the video surface", error)
             attachedLayout = null
@@ -110,8 +118,22 @@ class PlaybackEngine(context: Context) {
     fun stop() {
         pendingUrl = null
         playingUrl = null
-        ignoreNextStop = false
-        runCatching { player?.stop() }
+        // Drop the surface on this thread, before the slow input shutdown, so
+        // disposing the picture does not wait on the tuner socket.
+        detachInternal()
+        val generation = commandGeneration.incrementAndGet()
+        player?.let { mediaPlayer ->
+            // Silence on this thread so the sound ends with the tap. Closing the
+            // live input can block for seconds, so that work stays off the UI.
+            runCatching { mediaPlayer.volume = 0 }
+            commands.execute {
+                if (generation != commandGeneration.get()) return@execute
+                ignoreNextStop = false
+                runCatching { mediaPlayer.stop() }
+                if (generation != commandGeneration.get()) return@execute
+                runCatching { mediaPlayer.setMedia(null) }
+            }
+        }
         _phase.value = EnginePhase.Idle
         _stats.value = VideoStats()
         _error.value = null
@@ -120,10 +142,16 @@ class PlaybackEngine(context: Context) {
     fun release() {
         pendingUrl = null
         playingUrl = null
-        runCatching { player?.setEventListener(null) }
-        detachInternal()
-        runCatching { player?.release() }
-        runCatching { lib?.release() }
+        commandGeneration.incrementAndGet()
+        commands.execute {
+            val mediaPlayer = player
+            runCatching { mediaPlayer?.volume = 0 }
+            runCatching { mediaPlayer?.stop() }
+            runCatching { mediaPlayer?.setMedia(null) }
+            runCatching { mediaPlayer?.setEventListener(null) }
+            runCatching { mediaPlayer?.release() }
+            runCatching { lib?.release() }
+        }
     }
 
     private fun openLibVlc(): Pair<LibVLC, MediaPlayer> {
@@ -139,13 +167,25 @@ class PlaybackEngine(context: Context) {
         return library to MediaPlayer(library)
     }
 
-    private fun startLocked(mediaPlayer: MediaPlayer) {
+    private fun enqueueStart() {
+        val generation = commandGeneration.get()
+        val mediaPlayer = player ?: return
+        commands.execute {
+            if (generation != commandGeneration.get()) return@execute
+            startLocked(mediaPlayer, generation)
+        }
+    }
+
+    private fun startLocked(mediaPlayer: MediaPlayer, generation: Int) {
         val library = lib ?: return
         val url = pendingUrl ?: return
         if (attachedLayout == null) return
+        if (generation != commandGeneration.get()) return
         if (playingUrl == url && mediaPlayer.isPlaying) return
         ignoreNextStop = true
         mediaPlayer.stop()
+        if (generation != commandGeneration.get()) return
+        runCatching { mediaPlayer.volume = 100 }
         val media = Media(library, Uri.parse(url))
         media.addOption(":http-user-agent=HDHomeRunSignalMeter")
         media.addOption(":network-caching=1200")

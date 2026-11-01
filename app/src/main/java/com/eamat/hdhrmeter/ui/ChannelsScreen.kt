@@ -12,8 +12,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
@@ -31,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -52,6 +54,7 @@ fun ChannelsScreen(
     onQuery: (String) -> Unit,
     onFilter: (ChannelFilter) -> Unit,
     onWatch: (Channel) -> Unit,
+    onReturnScrollHandled: () -> Unit,
 ) {
     val query = state.query.trim()
     val matched = state.channels.filter { channel ->
@@ -70,6 +73,31 @@ fun ChannelsScreen(
         channelsInViewOrder(matched, state.recentChannels)
     } else {
         matched
+    }
+    val returnTo = state.returnToChannel
+    val returnIndex = if (returnTo == null) {
+        -1
+    } else {
+        shown.indexOfFirst {
+            it.guideNumber == returnTo.guideNumber && it.streamUrl == returnTo.streamUrl
+        }
+    }
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = returnIndex.coerceAtLeast(0),
+    )
+    LaunchedEffect(state.filter) {
+        // Coming back from the player reveals that channel instead of the top.
+        if (returnTo != null) return@LaunchedEffect
+        listState.scrollToItem(0)
+    }
+    LaunchedEffect(returnTo, shown) {
+        val channel = returnTo ?: return@LaunchedEffect
+        if (state.channelsLoading && shown.isEmpty()) return@LaunchedEffect
+        val index = shown.indexOfFirst {
+            it.guideNumber == channel.guideNumber && it.streamUrl == channel.streamUrl
+        }
+        if (index >= 0) listState.scrollToItem(index)
+        onReturnScrollHandled()
     }
     Scaffold(
         containerColor = Ink,
@@ -171,6 +199,7 @@ fun ChannelsScreen(
                 }
                 else -> {
                     LazyColumn(
+                        state = listState,
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),

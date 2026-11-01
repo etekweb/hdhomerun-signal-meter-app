@@ -88,6 +88,8 @@ data class UiState(
     val query: String = "",
     val filter: ChannelFilter = ChannelFilter.All,
     val recentChannels: List<String> = emptyList(),
+    /** Channel to reveal when the guide returns from the player. */
+    val returnToChannel: Channel? = null,
     val pendingChannel: Channel? = null,
     val signal: SignalReading? = null,
     val peaks: SignalPeaks = SignalPeaks(),
@@ -257,6 +259,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 channelsError = null,
                 query = "",
                 recentChannels = store.loadRecentChannels(device.deviceId),
+                returnToChannel = null,
             )
         }
         loadLineup(device, keepExisting = false)
@@ -273,7 +276,13 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setFilter(filter: ChannelFilter) {
-        _ui.update { it.copy(filter = filter) }
+        _ui.update { it.copy(filter = filter, returnToChannel = null) }
+    }
+
+    fun consumeReturnChannel() {
+        _ui.update { state ->
+            if (state.returnToChannel == null) state else state.copy(returnToChannel = null)
+        }
     }
 
     fun watch(channel: Channel) {
@@ -373,7 +382,6 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         when (val screen = _ui.value.screen) {
             is Screen.Watch -> {
                 cancelChannelHop()
-                stopPlayback()
                 _ui.update {
                     it.copy(
                         screen = Screen.Channels(screen.device),
@@ -383,8 +391,12 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                         tunerReleased = false,
                         offerTranscode = false,
                         pendingChannel = null,
+                        returnToChannel = screen.channel,
                     )
                 }
+                // The guide is already showing. Stopping the stream can block
+                // while the tuner socket closes, so it runs off the UI thread.
+                stopPlayback()
             }
             is Screen.Channels -> _ui.update { it.copy(screen = Screen.Devices, channelsError = null) }
             Screen.Devices -> Unit
