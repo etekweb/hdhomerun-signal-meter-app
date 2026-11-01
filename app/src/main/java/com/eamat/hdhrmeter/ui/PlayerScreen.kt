@@ -367,11 +367,6 @@ private fun MeterPanel(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            Text(
-                "Aim the antenna for quality. Symbol should stay at 100%.",
-                color = Muted,
-                style = MaterialTheme.typography.labelMedium,
-            )
             Meter(
                 label = "Strength",
                 percent = signal?.strengthPercent,
