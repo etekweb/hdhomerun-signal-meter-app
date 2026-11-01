@@ -20,7 +20,11 @@ The phone and the HDHomeRun need to be on the same LAN. The app uses the tunerâ€
 
 Tap the picture to hide the overlay. Channel up and down skip protected channels. Each tap shows the channel you would land on in the center of the picture. Tuning waits half a second, and another tap restarts that wait, so you can move several channels without loading each one.
 
-Quality is the number to aim. Symbol should stay at 100%. Strength matters less.
+### Interpreting signal meter data
+
+- Strength: Raw signal strength level. This basically indicates how close you are to the broadcast tower. This one isn't the most useful for adjusting antenna placement - it's OK if the strength level is lower than the other values.
+- Quality: Signal-to-noise ratio. **This is the most useful for dialing in your antenna placement.** The higher the better. Quality levels below ~60% may be at risk of dropping out as signal fluctuates. Also, a highly variable quality level indicates an unstable signal.
+- Symbol: When your signal is locked in, the symbol value will always be 100%. Signal dropping out will rapidly lower the symbol value, signal coming back in will rapidly raise the symbol value until it returns to 100%.
 
 ## Build
 
