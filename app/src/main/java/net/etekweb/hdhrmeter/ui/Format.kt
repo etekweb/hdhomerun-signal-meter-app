@@ -98,12 +98,17 @@ fun modulationLabel(raw: String?): String? {
     }
 }
 
-fun broadcastLabel(reading: SignalReading?, lineupFrequencyHz: Long?): String? {
+/**
+ * RF channel for the signal tab, without an "RF" prefix.
+ * The tuner `ch=` value wins. Otherwise a US broadcast center frequency is mapped
+ * to a channel, and anything else is shown as MHz. Modulation is appended when known.
+ */
+fun rfChannelText(reading: SignalReading?, lineupFrequencyHz: Long?): String? {
     val frequency = reading?.frequencyHz ?: lineupFrequencyHz
     val rf = reading?.rfChannel ?: frequency?.let(::rfChannelFromFrequencyHz)
     val parts = mutableListOf<String>()
     when {
-        rf != null -> parts += "RF $rf"
+        rf != null -> parts += rf.toString()
         frequency != null -> parts += "${frequency / 1_000_000} MHz"
     }
     modulationLabel(reading?.modulation)?.let { parts += it }

@@ -57,6 +57,13 @@ class DeviceStore(context: Context) {
             .apply()
     }
 
+    /** `Info` or `Signal`. Missing and unknown values mean the Info tab. */
+    fun loadOverlayTab(): String? = prefs.getString(KEY_OVERLAY_TAB, null)
+
+    fun saveOverlayTab(tab: String) {
+        prefs.edit().putString(KEY_OVERLAY_TAB, tab).apply()
+    }
+
     private fun recentChannelsKey(deviceId: String) = "$KEY_RECENT_CHANNELS$deviceId"
 
     private companion object {
@@ -64,6 +71,7 @@ class DeviceStore(context: Context) {
         const val KEY_HOST = "manual_host"
         const val KEY_GUIDE_HOST = "guide_host"
         const val KEY_RECENT_CHANNELS = "recent_channels_"
+        const val KEY_OVERLAY_TAB = "overlay_tab"
         const val KEY_ID = "device_id"
         const val KEY_NAME = "device_name"
         const val KEY_MODEL = "device_model"

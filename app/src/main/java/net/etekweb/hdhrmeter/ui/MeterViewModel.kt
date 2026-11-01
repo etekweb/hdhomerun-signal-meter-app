@@ -42,6 +42,13 @@ private const val CHANNEL_HOP_MS = 500L
 
 enum class ChannelFilter { All, Hd, Favorites, Recents }
 
+/** Player overlay page. [Info] is the default until the viewer picks [Signal]. */
+enum class OverlayTab { Info, Signal }
+
+internal fun overlayTabFromStored(raw: String?): OverlayTab {
+    return if (raw == OverlayTab.Signal.name) OverlayTab.Signal else OverlayTab.Info
+}
+
 enum class PlaybackPhase { Idle, Tuning, Buffering, Ready }
 
 sealed interface Screen {
@@ -100,6 +107,8 @@ data class UiState(
     val offerTranscode: Boolean = false,
     val transcoding: Boolean = false,
     val overlayVisible: Boolean = true,
+    /** Kept while the overlay is hidden, the channel changes, and the process restarts. */
+    val overlayTab: OverlayTab = OverlayTab.Info,
     val tunerReleased: Boolean = false,
 )
 
@@ -113,6 +122,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             manualHost = store.loadHost(),
             guideHost = store.loadGuideHost(),
             recent = store.loadRecent(),
+            overlayTab = overlayTabFromStored(store.loadOverlayTab()),
         ),
     )
     val ui: StateFlow<UiState> = _ui.asStateFlow()
@@ -362,6 +372,12 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleOverlay() {
         _ui.update { it.copy(overlayVisible = !it.overlayVisible) }
+    }
+
+    fun selectOverlayTab(tab: OverlayTab) {
+        if (_ui.value.overlayTab == tab) return
+        _ui.update { it.copy(overlayTab = tab) }
+        store.saveOverlayTab(tab.name)
     }
 
     fun showOverlay() {

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -48,6 +50,9 @@ import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -66,6 +71,7 @@ fun PlayerScreen(
     onAttach: (VLCVideoLayout) -> Unit,
     onDetach: (VLCVideoLayout) -> Unit,
     onToggleOverlay: () -> Unit,
+    onSelectOverlayTab: (OverlayTab) -> Unit,
     onBack: () -> Unit,
     onStep: (Int) -> Unit,
     onTranscode: () -> Unit,
@@ -119,6 +125,7 @@ fun PlayerScreen(
                 channel = watch.channel,
                 state = state,
                 onToggleOverlay = onToggleOverlay,
+                onSelectTab = onSelectOverlayTab,
                 onBack = onBack,
                 onStep = onStep,
                 onTranscode = onTranscode,
@@ -177,6 +184,7 @@ private fun SignalOverlay(
     channel: Channel,
     state: UiState,
     onToggleOverlay: () -> Unit,
+    onSelectTab: (OverlayTab) -> Unit,
     onBack: () -> Unit,
     onStep: (Int) -> Unit,
     onTranscode: () -> Unit,
@@ -189,38 +197,55 @@ private fun SignalOverlay(
     ) {
         val sidePanel = maxWidth > maxHeight && maxWidth > 700.dp
         val program = state.guide?.airing(channel.guideNumber, channel.guideName, state.guideNowMs)
+        val upcoming = state.guide?.upcoming(channel.guideNumber, channel.guideName, state.guideNowMs)
+        val overlayHeight = maxHeight
         Box(Modifier.fillMaxSize().noRippleClick { onToggleOverlay() })
         if (sidePanel) {
             Row(Modifier.fillMaxSize()) {
                 Column(Modifier.weight(1f).fillMaxHeight()) {
-                    ChannelHeader(channel, state.signal, program, onBack)
+                    ChannelHeader(channel, onBack)
                     Spacer(Modifier.weight(1f))
                     NoticeBlock(state, onTranscode, onResume, Modifier.padding(horizontal = 12.dp))
                     Transport(state, onStep)
                 }
-                MeterPanel(
+                OverlayPanel(
                     channel = channel,
                     state = state,
                     program = program,
+                    upcoming = upcoming,
+                    onSelectTab = onSelectTab,
                     modifier = Modifier
                         .width(340.dp)
-                        .fillMaxHeight()
-                        .verticalScroll(rememberScrollState())
+                        .heightIn(max = overlayHeight)
                         .padding(12.dp),
                 )
             }
         } else {
             Column(Modifier.fillMaxSize()) {
-                ChannelHeader(channel, state.signal, program, onBack)
-                Spacer(Modifier.weight(1f))
-                MeterPanel(
-                    channel = channel,
-                    state = state,
-                    program = program,
-                    modifier = Modifier.padding(horizontal = 12.dp),
-                )
-                NoticeBlock(state, onTranscode, onResume, Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
-                Transport(state, onStep)
+                ChannelHeader(channel, onBack)
+                BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                    // Keep the channel buttons and any playback notice below a long description.
+                    val panelMax = (maxHeight - 240.dp).coerceAtLeast(140.dp)
+                    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Bottom) {
+                        OverlayPanel(
+                            channel = channel,
+                            state = state,
+                            program = program,
+                            upcoming = upcoming,
+                            onSelectTab = onSelectTab,
+                            modifier = Modifier
+                                .heightIn(max = panelMax)
+                                .padding(horizontal = 12.dp),
+                        )
+                        NoticeBlock(
+                            state,
+                            onTranscode,
+                            onResume,
+                            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                        Transport(state, onStep)
+                    }
+                }
             }
         }
     }
@@ -281,12 +306,7 @@ private fun ChannelHopCard(channel: Channel, program: GuideProgram?, modifier: M
 }
 
 @Composable
-private fun ChannelHeader(
-    channel: Channel,
-    signal: SignalReading?,
-    program: GuideProgram?,
-    onBack: () -> Unit,
-) {
+private fun ChannelHeader(channel: Channel, onBack: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -310,87 +330,204 @@ private fun ChannelHeader(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (program != null) {
-                Text(
-                    program.title,
-                    color = Paper,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                formatProgramDetail(program.subtitle, program.episode)?.let { detail ->
-                    Text(
-                        detail,
-                        color = Muted,
-                        style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+        }
+    }
+}
+
+@Composable
+private fun OverlayPanel(
+    channel: Channel,
+    state: UiState,
+    program: GuideProgram?,
+    upcoming: GuideProgram?,
+    onSelectTab: (OverlayTab) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val tab = state.overlayTab
+    val showNext = tab == OverlayTab.Info && upcoming != null
+    val infoScroll = rememberScrollState()
+    val signalScroll = rememberScrollState()
+    Surface(
+        color = Color(0xE612181D),
+        shape = RoundedCornerShape(16.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .holdClicks(),
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            OverlayTabs(selected = tab, onSelect = onSelectTab)
+            Column(
+                Modifier
+                    .weight(1f, fill = false)
+                    .fillMaxWidth()
+                    .verticalScroll(if (tab == OverlayTab.Info) infoScroll else signalScroll)
+                    .padding(horizontal = 14.dp)
+                    .padding(top = 12.dp, bottom = if (showNext) 8.dp else 14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (tab == OverlayTab.Info) {
+                    ProgramInfo(program, state.guideLoading, state.guideError)
+                } else {
+                    SignalInfo(channel, state)
                 }
-                Text(
-                    formatAirTime(program.startEpochMs, program.stopEpochMs),
-                    color = Muted,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
             }
-            broadcastLabel(signal, channel.frequencyHz)?.let { label ->
-                Text(label, color = Muted, style = MaterialTheme.typography.bodyMedium)
+            if (tab == OverlayTab.Info && upcoming != null) UpNext(upcoming)
+        }
+    }
+}
+
+@Composable
+private fun OverlayTabs(selected: OverlayTab, onSelect: (OverlayTab) -> Unit) {
+    Row(Modifier.fillMaxWidth()) {
+        OverlayTab.entries.forEach { tab ->
+            val active = tab == selected
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { this.selected = active }
+                    .clickable(role = Role.Tab) { onSelect(tab) }
+                    .padding(top = 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    tab.name,
+                    color = if (active) Amber else Muted,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Spacer(Modifier.height(8.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
+                        .background(if (active) Amber else Color(0xFF3A4550)),
+                )
             }
         }
     }
 }
 
 @Composable
-private fun MeterPanel(
-    channel: Channel,
-    state: UiState,
-    program: GuideProgram?,
-    modifier: Modifier = Modifier,
-) {
-    val signal = state.signal
-    Surface(
-        color = Color(0xE612181D),
-        shape = RoundedCornerShape(16.dp),
-        modifier = modifier.holdClicks(),
+private fun ProgramInfo(program: GuideProgram?, guideLoading: Boolean, guideError: String?) {
+    if (program == null) {
+        val message = when {
+            guideLoading -> "Loading the guide…"
+            !guideError.isNullOrBlank() -> guideError
+            else -> "No program listed right now."
+        }
+        Text(
+            message,
+            color = if (guideError.isNullOrBlank() || guideLoading) Muted else Amber,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            program.title,
+            color = Paper,
+            style = MaterialTheme.typography.titleLarge,
+        )
+        program.episode?.trim()?.ifBlank { null }?.let { episode ->
+            Text(
+                episode,
+                color = Amber,
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
+        program.subtitle?.trim()?.ifBlank { null }?.let { subtitle ->
+            Text(
+                subtitle,
+                color = Paper,
+                style = MaterialTheme.typography.bodyLarge,
+            )
+        }
+        Text(
+            formatAirTime(program.startEpochMs, program.stopEpochMs),
+            color = Muted,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+    }
+    program.description?.trim()?.ifBlank { null }?.let { description ->
+        Text(
+            description,
+            color = Paper,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+    }
+}
+
+@Composable
+private fun UpNext(program: GuideProgram) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp)
+            .padding(bottom = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        Column(
-            Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+        HorizontalDivider(color = Color(0xFF3A4550))
+        Spacer(Modifier.height(8.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            program?.description?.let { description ->
-                Text(
-                    description,
-                    color = Paper,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Meter(
-                label = "Strength",
-                percent = signal?.strengthPercent,
-                detail = signal?.strengthDetail,
-                peak = state.peaks.strength,
-                kind = MeterKind.Strength,
+            Text("Up next", color = Muted, style = MaterialTheme.typography.labelMedium)
+            Text(
+                formatClockTime(program.startEpochMs),
+                color = Muted,
+                style = MaterialTheme.typography.labelMedium,
             )
-            Meter(
-                label = "Quality",
-                percent = signal?.qualityPercent,
-                detail = signal?.qualityDetail,
-                peak = state.peaks.quality,
-                kind = MeterKind.Quality,
+        }
+        Text(
+            program.title,
+            color = Paper,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        formatProgramDetail(program.subtitle, program.episode)?.let { detail ->
+            Text(
+                detail,
+                color = Muted,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-            Meter(
-                label = "Symbol",
-                percent = signal?.symbolPercent,
-                detail = null,
-                peak = state.peaks.symbol,
-                kind = MeterKind.Symbol,
-            )
-            state.signalNote?.let { Text(it, color = Amber, style = MaterialTheme.typography.bodySmall) }
-            StreamFacts(channel, state.video, signal, state.transcoding)
         }
     }
+}
+
+@Composable
+private fun SignalInfo(channel: Channel, state: UiState) {
+    val signal = state.signal
+    rfChannelText(signal, channel.frequencyHz)?.let { text ->
+        Fact("RF channel", text)
+    }
+    Meter(
+        label = "Strength",
+        percent = signal?.strengthPercent,
+        detail = signal?.strengthDetail,
+        peak = state.peaks.strength,
+        kind = MeterKind.Strength,
+    )
+    Meter(
+        label = "Quality",
+        percent = signal?.qualityPercent,
+        detail = signal?.qualityDetail,
+        peak = state.peaks.quality,
+        kind = MeterKind.Quality,
+    )
+    Meter(
+        label = "Symbol",
+        percent = signal?.symbolPercent,
+        detail = null,
+        peak = state.peaks.symbol,
+        kind = MeterKind.Symbol,
+    )
+    state.signalNote?.let { Text(it, color = Amber, style = MaterialTheme.typography.bodySmall) }
+    StreamFacts(channel, state.video, signal, state.transcoding)
 }
 
 @Composable

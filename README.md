@@ -10,9 +10,9 @@ The phone and the HDHomeRun need to be on the same LAN. The app uses the tuner�
 - Open the channel lineup. Search, and filter to HD, favorites, or recently viewed channels. Recents lists channels you have started watching, newest first, and keeps that list for each tuner. Copy-protected channels are listed and marked Protected. They are not played.
 - Set a guide provider by IP address. The app reads `http://<address>:8080/xmlguide.xmltv` and shows the program on now in the channel lineup and on the player. Each lineup row also shows the next program and the time it starts.
 - Watch a channel. The stream stops when you leave the player, so the tuner is free for something else. Pressing Home while a channel is playing moves the picture into the system picture-in-picture window and keeps the tuner. Closing that window releases the tuner. Resume tunes it again.
-- Read the overlay while a channel is playing:
-  - Channel number and name
-  - RF channel and modulation, such as `RF 31 · 8VSB`. The tuner’s `ch=` field is used when it is present. Otherwise a US broadcast center frequency is mapped to an RF channel. A frequency that is not on that map is shown in MHz.
+- Read the overlay while a channel is playing. The corner by the back button shows the channel number and call sign. The panel has Info and Signal tabs. Info is selected until you pick Signal, and that choice is remembered.
+  - Info: program name, episode number, episode title, air time, and description. A smaller block at the bottom shows the next program.
+  - Signal: RF channel and modulation, such as `31 · 8VSB`. The tuner’s `ch=` field is used when it is present. Otherwise a US broadcast center frequency is mapped to an RF channel. A frequency that is not on that map is shown in MHz.
   - Strength, quality, and symbol meters, with a peak mark for the current session
   - Picture size, frame rate, video codec, audio codec, and channel layout, once the player has seen them
   - Live bitrate of the program being received
