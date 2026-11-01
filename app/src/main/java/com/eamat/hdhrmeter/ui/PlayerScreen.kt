@@ -236,8 +236,7 @@ private fun ChannelHopCard(channel: Channel, program: GuideProgram?, modifier: M
         modifier = modifier
             .padding(horizontal = 32.dp)
             .widthIn(max = 440.dp)
-            .fillMaxWidth(0.86f)
-            .holdClicks(),
+            .fillMaxWidth(0.86f),
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 28.dp, vertical = 22.dp),
@@ -290,7 +289,6 @@ private fun ChannelHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .holdClicks()
             .padding(start = 4.dp, end = 16.dp, top = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -502,7 +500,7 @@ private fun NoticeBlock(
     onResume: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier.holdClicks(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         state.playbackError?.let { message ->
             Text(message, color = Bad, style = MaterialTheme.typography.bodyMedium)
             if (state.offerTranscode) {
@@ -530,7 +528,6 @@ private fun Transport(state: UiState, onStep: (Int) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .holdClicks()
             .padding(horizontal = 8.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
