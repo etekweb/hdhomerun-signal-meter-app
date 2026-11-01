@@ -58,11 +58,12 @@ fun ChannelsScreen(
     onReturnScrollHandled: () -> Unit,
 ) {
     val query = state.query.trim()
+    val guide = state.guide
+    val nowMs = state.guideNowMs
     val matched = state.channels.filter { channel ->
-        val programTitle = state.guide
-            ?.airing(channel.guideNumber, channel.guideName, state.guideNowMs)
-            ?.title
-        val matchesQuery = channelMatchesQuery(channel, query, programTitle)
+        val programTitle = guide?.airing(channel.guideNumber, channel.guideName, nowMs)?.title
+        val upcomingTitle = guide?.upcoming(channel.guideNumber, channel.guideName, nowMs)?.title
+        val matchesQuery = channelMatchesQuery(channel, query, programTitle, upcomingTitle)
         val matchesFilter = when (state.filter) {
             ChannelFilter.All -> true
             ChannelFilter.Hd -> channel.hd || channel.atsc3
@@ -218,7 +219,8 @@ fun ChannelsScreen(
                         items(shown, key = { "${it.guideNumber}|${it.streamUrl}" }) { channel ->
                             ChannelRow(
                                 channel,
-                                program = state.guide?.airing(channel.guideNumber, channel.guideName, state.guideNowMs),
+                                program = guide?.airing(channel.guideNumber, channel.guideName, nowMs),
+                                upcoming = guide?.upcoming(channel.guideNumber, channel.guideName, nowMs),
                                 onClick = { onWatch(channel) },
                             )
                         }
@@ -229,12 +231,18 @@ fun ChannelsScreen(
     }
 }
 
-internal fun channelMatchesQuery(channel: Channel, query: String, programTitle: String?): Boolean {
+internal fun channelMatchesQuery(
+    channel: Channel,
+    query: String,
+    programTitle: String?,
+    upcomingTitle: String? = null,
+): Boolean {
     val needle = query.trim()
     if (needle.isBlank()) return true
     return channel.guideNumber.contains(needle, ignoreCase = true) ||
         channel.guideName.contains(needle, ignoreCase = true) ||
-        programTitle?.contains(needle, ignoreCase = true) == true
+        programTitle?.contains(needle, ignoreCase = true) == true ||
+        upcomingTitle?.contains(needle, ignoreCase = true) == true
 }
 
 @Composable
@@ -244,7 +252,9 @@ private fun GuideStatus(state: UiState) {
         state.guideLoading && guide == null -> "Loading the guide…"
         state.guideError != null -> state.guideError
         guide != null && state.channels.isNotEmpty() && state.channels.none { channel ->
-            guide.airing(channel.guideNumber, channel.guideName, state.guideNowMs) != null
+            val nowMs = state.guideNowMs
+            guide.airing(channel.guideNumber, channel.guideName, nowMs) != null ||
+                guide.upcoming(channel.guideNumber, channel.guideName, nowMs) != null
         } -> "The guide has no program for these channels."
         else -> null
     } ?: return
@@ -263,7 +273,12 @@ private fun FilterChoice(label: String, selected: Boolean, onClick: () -> Unit) 
 }
 
 @Composable
-private fun ChannelRow(channel: Channel, program: GuideProgram?, onClick: () -> Unit) {
+private fun ChannelRow(
+    channel: Channel,
+    program: GuideProgram?,
+    upcoming: GuideProgram?,
+    onClick: () -> Unit,
+) {
     Surface(
         onClick = onClick,
         color = InkRaised,
@@ -305,6 +320,7 @@ private fun ChannelRow(channel: Channel, program: GuideProgram?, onClick: () -> 
                         style = MaterialTheme.typography.labelMedium,
                     )
                 }
+                if (upcoming != null) UpcomingLine(upcoming)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     if (channel.hd) Badge("HD")
                     if (channel.atsc3) Badge("ATSC 3.0")
@@ -322,6 +338,38 @@ private fun ChannelRow(channel: Channel, program: GuideProgram?, onClick: () -> 
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun UpcomingLine(program: GuideProgram) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "Up next",
+            color = Muted,
+            style = MaterialTheme.typography.labelMedium,
+        )
+        Text(
+            program.title,
+            color = Paper,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier
+                .padding(horizontal = 6.dp)
+                .weight(1f),
+        )
+        Text(
+            formatClockTime(program.startEpochMs),
+            color = Muted,
+            maxLines = 1,
+            style = MaterialTheme.typography.labelMedium,
+        )
     }
 }
 

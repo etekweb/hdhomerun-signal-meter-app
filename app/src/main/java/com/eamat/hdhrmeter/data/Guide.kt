@@ -40,10 +40,17 @@ class GuideIndex(
     val channelCount: Int,
 ) {
     fun airing(guideNumber: String, guideName: String, nowMs: Long): GuideProgram? {
-        val programs = byNumber[canonicalGuideNumber(guideNumber)]
+        return programsFor(guideNumber, guideName)?.airingAt(nowMs)
+    }
+
+    /** The next program that starts after [nowMs]. The program on now is left out. */
+    fun upcoming(guideNumber: String, guideName: String, nowMs: Long): GuideProgram? {
+        return programsFor(guideNumber, guideName)?.upcomingAt(nowMs)
+    }
+
+    private fun programsFor(guideNumber: String, guideName: String): List<GuideProgram>? {
+        return byNumber[canonicalGuideNumber(guideNumber)]
             ?: guideNameKeys(guideName).firstNotNullOfOrNull { byName[it] }
-            ?: return null
-        return programs.airingAt(nowMs)
     }
 
     /** The next start or stop at or after [nowMs], so the UI can roll to the next program. */
@@ -72,6 +79,14 @@ internal fun List<GuideProgram>.airingAt(nowMs: Long): GuideProgram? {
         if (nowMs < program.stopEpochMs) chosen = program
     }
     return chosen
+}
+
+/** First program that starts after [nowMs]. The list is sorted by start time. */
+internal fun List<GuideProgram>.upcomingAt(nowMs: Long): GuideProgram? {
+    for (program in this) {
+        if (program.startEpochMs > nowMs) return program
+    }
+    return null
 }
 
 /** `10.0.0.241` becomes `http://10.0.0.241:8080/xmlguide.xmltv`. */

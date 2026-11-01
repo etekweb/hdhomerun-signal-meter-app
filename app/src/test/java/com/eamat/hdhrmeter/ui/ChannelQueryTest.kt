@@ -36,4 +36,11 @@ class ChannelQueryTest {
         assertFalse(channelMatchesQuery(channel, "jeopardy", "Wheel of Fortune"))
         assertFalse(channelMatchesQuery(channel, "jeopardy", null))
     }
+
+    @Test
+    fun queryMatchesUpcomingProgramTitle() {
+        assertTrue(channelMatchesQuery(channel, "news", "Jeopardy!", "Nightly News"))
+        assertFalse(channelMatchesQuery(channel, "news", "Jeopardy!", "Later Show"))
+        assertFalse(channelMatchesQuery(channel, "news", "Jeopardy!", null))
+    }
 }

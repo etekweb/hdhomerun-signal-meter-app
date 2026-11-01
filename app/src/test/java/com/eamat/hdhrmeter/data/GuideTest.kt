@@ -1,6 +1,7 @@
 package net.etekweb.hdhrmeter.data
 
 import net.etekweb.hdhrmeter.ui.formatAirTime
+import net.etekweb.hdhrmeter.ui.formatClockTime
 import net.etekweb.hdhrmeter.ui.formatProgramDetail
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -66,6 +67,15 @@ class GuideTest {
         assertEquals(parseXmltvTime("20261031043000 +0000"), lengthOnly?.stopEpochMs)
         assertNull(index.airing("999.9", "NOTACHANNEL", during))
         assertEquals(onTheHour, index.nextBoundary(during))
+
+        val before = parseXmltvTime("20261031003000 +0000")!!
+        assertNull(index.airing("2.1", "WJBK", before))
+        assertEquals("Law & Order", index.upcoming("2.1", "WJBK", before)?.title)
+        assertEquals("Later Show", index.upcoming("2.1", "WJBK", during)?.title)
+        assertEquals("Later Show", index.upcoming("9.9", "WJBKDT", during)?.title)
+        assertNull(index.upcoming("2.1", "WJBK", onTheHour))
+        assertNull(index.upcoming("2.2", "", during))
+        assertNull(index.upcoming("999.9", "NOTACHANNEL", during))
     }
 
     @Test
@@ -93,6 +103,10 @@ class GuideTest {
         assertEquals(
             "8:00 PM – 9:30 PM",
             formatAirTime(start, stop, ZoneId.of("America/New_York"), Locale.US),
+        )
+        assertEquals(
+            "8:00 PM",
+            formatClockTime(start, ZoneId.of("America/New_York"), Locale.US),
         )
         assertEquals("Hare Today · S02E05", formatProgramDetail("Hare Today", "S02E05"))
         assertNull(formatProgramDetail("  ", null))

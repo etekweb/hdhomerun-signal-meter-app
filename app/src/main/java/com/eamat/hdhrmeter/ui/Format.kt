@@ -21,6 +21,15 @@ fun formatAirTime(
     return "${clock(startMs, zone, formatter)} – ${clock(stopMs, zone, formatter)}"
 }
 
+fun formatClockTime(
+    epochMs: Long,
+    zone: ZoneId = ZoneId.systemDefault(),
+    locale: Locale = Locale.getDefault(),
+): String {
+    val formatter = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale)
+    return clock(epochMs, zone, formatter)
+}
+
 fun formatProgramDetail(subtitle: String?, episode: String?): String? {
     return listOfNotNull(subtitle?.trim()?.ifBlank { null }, episode?.trim()?.ifBlank { null })
         .joinToString(" · ")
