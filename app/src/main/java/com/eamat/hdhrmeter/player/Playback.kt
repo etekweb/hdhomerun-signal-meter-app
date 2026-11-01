@@ -268,8 +268,9 @@ class PlaybackEngine(context: Context) {
                 when (val track = media.getTrack(index)) {
                     is IMedia.VideoTrack -> if (videoMime == null) {
                         videoMime = mimeForCodec(track.codec, track.originalCodec)
-                        width = track.width.takeIf { it > 0 }
-                        height = displayHeight(track.height).takeIf { it > 0 }
+                        val size = pictureSize(track, mediaPlayer)
+                        width = size?.first
+                        height = size?.second
                         frameRate = frameRateOf(track.frameRateNum, track.frameRateDen)
                         trackBits = track.bitrate.takeIf { it > 0 }?.toLong()
                     }
@@ -307,6 +308,38 @@ class PlaybackEngine(context: Context) {
         }
     }
 
+    private fun pictureSize(track: IMedia.VideoTrack, mediaPlayer: MediaPlayer): Pair<Int, Int>? {
+        val drawn = drawnPictureAccess?.read(mediaPlayer)
+        // The vout visible size is the picture on screen. Prefer it when it is the
+        // same frame as this track, so codec padding (1088, 2176, 768, 512) is not shown.
+        if (drawn != null &&
+            fitsCodingAlignment(track.width, drawn.width) &&
+            fitsCodingAlignment(track.height, drawn.height)
+        ) {
+            val useDrawnSar = drawn.sarNum > 0 && drawn.sarDen > 0
+            return displayResolution(
+                drawn.width,
+                drawn.height,
+                if (useDrawnSar) drawn.sarNum else track.sarNum,
+                if (useDrawnSar) drawn.sarDen else track.sarDen,
+                track.orientation,
+            )
+        }
+        return displayResolution(
+            track.width,
+            track.height,
+            track.sarNum,
+            track.sarDen,
+            track.orientation,
+        )
+    }
+
+    private val drawnPictureAccess: DrawnPictureAccess? by lazy {
+        val access = DrawnPictureAccess.open()
+        if (access == null) Log.w(TAG, "Could not read the drawn picture size")
+        access
+    }
+
     private companion object {
         const val TAG = "HdhrPlayback"
     }
@@ -321,9 +354,52 @@ private fun bitsPerSecond(bytesPerMicrosecond: Float): Long? {
     return (bytesPerMicrosecond * 8_000_000.0).toLong().takeIf { it > 0L }
 }
 
-private fun displayHeight(height: Int): Int {
-    // MPEG-2 pads 1080-line frames to a multiple of 16, so the coded height is 1088.
-    return if (height == 1088) 1080 else height
+private class DrawnPicture(
+    val width: Int,
+    val height: Int,
+    val sarNum: Int,
+    val sarDen: Int,
+)
+
+private class DrawnPictureAccess(
+    private val helperField: java.lang.reflect.Field,
+    private val widthField: java.lang.reflect.Field,
+    private val heightField: java.lang.reflect.Field,
+    private val sarNumField: java.lang.reflect.Field,
+    private val sarDenField: java.lang.reflect.Field,
+) {
+    fun read(player: MediaPlayer): DrawnPicture? {
+        return runCatching {
+            val helper = helperField.get(player) ?: return null
+            val width = widthField.getInt(helper)
+            val height = heightField.getInt(helper)
+            if (width <= 0 || height <= 0) return null
+            DrawnPicture(
+                width,
+                height,
+                sarNumField.getInt(helper),
+                sarDenField.getInt(helper),
+            )
+        }.getOrNull()
+    }
+
+    companion object {
+        fun open(): DrawnPictureAccess? {
+            return runCatching {
+                val helperField = MediaPlayer::class.java.getDeclaredField("mVideoHelper")
+                helperField.isAccessible = true
+                val type = Class.forName("org.videolan.libvlc.VideoHelper")
+                fun field(name: String) = type.getDeclaredField(name).apply { isAccessible = true }
+                DrawnPictureAccess(
+                    helperField,
+                    field("mVideoVisibleWidth"),
+                    field("mVideoVisibleHeight"),
+                    field("mVideoSarNum"),
+                    field("mVideoSarDen"),
+                )
+            }.getOrNull()
+        }
+    }
 }
 
 private fun frameRateOf(numerator: Int, denominator: Int): Float? {
