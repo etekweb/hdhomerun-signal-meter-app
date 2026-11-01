@@ -1,4 +1,4 @@
-package com.eamat.hdhrmeter
+package net.etekweb.hdhrmeter
 
 import android.app.PictureInPictureParams
 import android.app.PictureInPictureUiState
@@ -31,12 +31,12 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.eamat.hdhrmeter.ui.ChannelsScreen
-import com.eamat.hdhrmeter.ui.DevicesScreen
-import com.eamat.hdhrmeter.ui.HdhrTheme
-import com.eamat.hdhrmeter.ui.MeterViewModel
-import com.eamat.hdhrmeter.ui.PlayerScreen
-import com.eamat.hdhrmeter.ui.Screen
+import net.etekweb.hdhrmeter.ui.ChannelsScreen
+import net.etekweb.hdhrmeter.ui.DevicesScreen
+import net.etekweb.hdhrmeter.ui.HdhrTheme
+import net.etekweb.hdhrmeter.ui.MeterViewModel
+import net.etekweb.hdhrmeter.ui.PlayerScreen
+import net.etekweb.hdhrmeter.ui.Screen
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MeterViewModel by viewModels()

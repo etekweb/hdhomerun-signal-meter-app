@@ -1,9 +1,9 @@
-package com.eamat.hdhrmeter.player
+package net.etekweb.hdhrmeter.player
 
 import android.content.Context
 import android.net.Uri
 import android.util.Log
-import com.eamat.hdhrmeter.data.StreamFailure
+import net.etekweb.hdhrmeter.data.StreamFailure
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow

@@ -1,4 +1,4 @@
-package com.eamat.hdhrmeter.data
+package net.etekweb.hdhrmeter.data
 
 data class HdhrDevice(
     val deviceId: String,

@@ -1,4 +1,4 @@
-package com.eamat.hdhrmeter.ui
+package net.etekweb.hdhrmeter.ui
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -39,10 +39,10 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.eamat.hdhrmeter.data.Channel
-import com.eamat.hdhrmeter.data.GuideProgram
-import com.eamat.hdhrmeter.data.HdhrDevice
-import com.eamat.hdhrmeter.data.channelsInViewOrder
+import net.etekweb.hdhrmeter.data.Channel
+import net.etekweb.hdhrmeter.data.GuideProgram
+import net.etekweb.hdhrmeter.data.HdhrDevice
+import net.etekweb.hdhrmeter.data.channelsInViewOrder
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

@@ -1,8 +1,8 @@
-package com.eamat.hdhrmeter.ui
+package net.etekweb.hdhrmeter.ui
 
 import androidx.compose.ui.graphics.Color
-import com.eamat.hdhrmeter.data.SignalReading
-import com.eamat.hdhrmeter.data.rfChannelFromFrequencyHz
+import net.etekweb.hdhrmeter.data.SignalReading
+import net.etekweb.hdhrmeter.data.rfChannelFromFrequencyHz
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter

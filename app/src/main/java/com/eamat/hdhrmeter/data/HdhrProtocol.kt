@@ -1,4 +1,4 @@
-package com.eamat.hdhrmeter.data
+package net.etekweb.hdhrmeter.data
 
 import org.json.JSONArray
 import org.json.JSONObject

@@ -1,4 +1,4 @@
-package com.eamat.hdhrmeter.data
+package net.etekweb.hdhrmeter.data
 
 /**
  * The channel a tap of channel up or down would land on.

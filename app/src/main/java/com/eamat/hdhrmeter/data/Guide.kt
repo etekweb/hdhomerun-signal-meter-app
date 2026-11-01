@@ -1,4 +1,4 @@
-package com.eamat.hdhrmeter.data
+package net.etekweb.hdhrmeter.data
 
 import org.xml.sax.Attributes
 import org.xml.sax.helpers.DefaultHandler

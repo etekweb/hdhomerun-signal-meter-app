@@ -1,4 +1,4 @@
-package com.eamat.hdhrmeter.ui
+package net.etekweb.hdhrmeter.ui
 
 import android.graphics.Rect
 import android.view.ViewGroup
@@ -52,10 +52,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.eamat.hdhrmeter.data.Channel
-import com.eamat.hdhrmeter.data.GuideProgram
-import com.eamat.hdhrmeter.data.SignalReading
-import com.eamat.hdhrmeter.player.VideoStats
+import net.etekweb.hdhrmeter.data.Channel
+import net.etekweb.hdhrmeter.data.GuideProgram
+import net.etekweb.hdhrmeter.data.SignalReading
+import net.etekweb.hdhrmeter.player.VideoStats
 import kotlin.math.roundToInt
 import org.videolan.libvlc.util.VLCVideoLayout
 

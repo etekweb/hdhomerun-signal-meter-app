@@ -1,4 +1,4 @@
-package com.eamat.hdhrmeter.ui
+package net.etekweb.hdhrmeter.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -35,7 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
-import com.eamat.hdhrmeter.data.HdhrDevice
+import net.etekweb.hdhrmeter.data.HdhrDevice
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

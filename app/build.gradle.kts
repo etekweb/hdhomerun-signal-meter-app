@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "com.eamat.hdhrmeter"
+    namespace = "net.etekweb.hdhrmeter"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.eamat.hdhrmeter"
+        applicationId = "net.etekweb.hdhrmeter"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

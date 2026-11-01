@@ -1,4 +1,4 @@
-package com.eamat.hdhrmeter.data
+package net.etekweb.hdhrmeter.data
 
 /** Newest viewed guide number first. Older entries fall off the end. */
 const val MAX_RECENT_CHANNELS = 100

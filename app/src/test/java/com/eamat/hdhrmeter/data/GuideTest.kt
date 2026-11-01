@@ -1,7 +1,7 @@
-package com.eamat.hdhrmeter.data
+package net.etekweb.hdhrmeter.data
 
-import com.eamat.hdhrmeter.ui.formatAirTime
-import com.eamat.hdhrmeter.ui.formatProgramDetail
+import net.etekweb.hdhrmeter.ui.formatAirTime
+import net.etekweb.hdhrmeter.ui.formatProgramDetail
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
