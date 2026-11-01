@@ -5,8 +5,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -15,13 +17,16 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -30,8 +35,12 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.window.Dialog
+import net.etekweb.hdhrmeter.R
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
@@ -43,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import net.etekweb.hdhrmeter.data.Channel
 import net.etekweb.hdhrmeter.data.GuideProgram
 import net.etekweb.hdhrmeter.data.HdhrDevice
+import net.etekweb.hdhrmeter.data.TunerStation
 import net.etekweb.hdhrmeter.data.channelsInViewOrder
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -56,6 +66,10 @@ fun ChannelsScreen(
     onFilter: (ChannelFilter) -> Unit,
     onWatch: (Channel) -> Unit,
     onReturnScrollHandled: () -> Unit,
+    onOpenTuners: () -> Unit,
+    onCloseTuners: () -> Unit,
+    onRefreshTuners: () -> Unit,
+    onClearTuner: (Int) -> Unit,
 ) {
     val query = state.query.trim()
     val guide = state.guide
@@ -123,6 +137,15 @@ fun ChannelsScreen(
                     }
                 },
                 actions = {
+                    TextButton(onClick = onOpenTuners) {
+                        Icon(
+                            painterResource(R.drawable.ic_tuners),
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("Tuners")
+                    }
                     IconButton(onClick = onRefresh, enabled = !state.channelsLoading) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh channels")
                     }
@@ -229,6 +252,14 @@ fun ChannelsScreen(
             }
         }
     }
+    if (state.tuners.open) {
+        TunersDialog(
+            state.tuners,
+            onClose = onCloseTuners,
+            onRefresh = onRefreshTuners,
+            onClear = onClearTuner,
+        )
+    }
 }
 
 internal fun channelMatchesQuery(
@@ -243,6 +274,142 @@ internal fun channelMatchesQuery(
         channel.guideName.contains(needle, ignoreCase = true) ||
         programTitle?.contains(needle, ignoreCase = true) == true ||
         upcomingTitle?.contains(needle, ignoreCase = true) == true
+}
+
+@Composable
+private fun TunersDialog(
+    panel: TunerPanel,
+    onClose: () -> Unit,
+    onRefresh: () -> Unit,
+    onClear: (Int) -> Unit,
+) {
+    Dialog(onDismissRequest = onClose) {
+        Surface(
+            color = InkRaised,
+            shape = MaterialTheme.shapes.large,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                Modifier
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(20.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Tuners",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Paper,
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(
+                        onClick = onRefresh,
+                        enabled = !panel.loading && panel.clearing == null,
+                    ) {
+                        Icon(Icons.Filled.Refresh, contentDescription = "Refresh tuners", tint = Amber)
+                    }
+                }
+                if (panel.rows.any { it.inUse }) {
+                    Text(
+                        "Force clear stops whoever is using that tuner.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Muted,
+                        modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+                    )
+                }
+                if (panel.loading) {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp),
+                        color = Amber,
+                        trackColor = Ink,
+                    )
+                }
+                if (panel.loading && panel.rows.isEmpty()) {
+                    Text(
+                        "Reading tuners…",
+                        color = Muted,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+                panel.rows.forEachIndexed { position, row ->
+                    if (position > 0) {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    }
+                    TunerStatusRow(row, clearing = panel.clearing, onClear = { onClear(row.index) })
+                }
+                if (!panel.loading && panel.rows.isEmpty() && panel.error == null) {
+                    Text("This device did not report any tuners.", color = Muted)
+                }
+                panel.error?.let { message ->
+                    Text(
+                        message,
+                        color = Bad,
+                        modifier = Modifier.padding(top = 12.dp),
+                    )
+                }
+                TextButton(onClick = onClose, modifier = Modifier.align(Alignment.End)) {
+                    Text("Close")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TunerStatusRow(
+    row: TunerStation,
+    clearing: Int?,
+    onClear: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                "Tuner ${row.index}",
+                color = Amber,
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                row.label,
+                color = if (row.inUse) Paper else Muted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            row.target?.let { target ->
+                Text(
+                    target,
+                    color = Muted,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+        }
+        if (row.inUse) {
+            TextButton(onClick = onClear, enabled = clearing == null) {
+                if (clearing == row.index) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = Amber,
+                    )
+                } else {
+                    Text("Force clear", color = if (clearing == null) Bad else Muted)
+                }
+            }
+        }
+    }
 }
 
 @Composable

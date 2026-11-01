@@ -24,6 +24,29 @@ data class Channel(
     val atsc3: Boolean,
 )
 
+/** One tuner on the guide's tuner list. [label] is the station or "Idle". */
+data class TunerStation(
+    val index: Int,
+    val label: String,
+    val target: String?,
+    val inUse: Boolean,
+)
+
+/**
+ * Someone watching through the DVR's live relay, which is not an extra tuner.
+ * The native HDHomeRun app shows up here while a real tuner carries the channel.
+ */
+data class ChannelViewer(
+    val channel: String,
+    val target: String,
+)
+
+/** Tuners from `/status.json`, plus live-relay viewers that belong on those tuners. */
+data class DeviceStatus(
+    val tuners: List<TunerJson>,
+    val viewers: List<ChannelViewer>,
+)
+
 /** One row from `/status.json`. Idle tuners often contain only [resource]. */
 data class TunerJson(
     val resource: String?,

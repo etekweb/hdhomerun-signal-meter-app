@@ -20,6 +20,9 @@ import net.etekweb.hdhrmeter.data.isIdle
 import net.etekweb.hdhrmeter.data.mergeSignal
 import net.etekweb.hdhrmeter.data.rewriteStreamUrl
 import net.etekweb.hdhrmeter.data.selectTuner
+import net.etekweb.hdhrmeter.data.DeviceStatus
+import net.etekweb.hdhrmeter.data.TunerStation
+import net.etekweb.hdhrmeter.data.tunerStations
 import net.etekweb.hdhrmeter.data.withMobileTranscode
 import net.etekweb.hdhrmeter.player.EnginePhase
 import net.etekweb.hdhrmeter.player.PlaybackEngine
@@ -110,6 +113,16 @@ data class UiState(
     /** Kept while the overlay is hidden, the channel changes, and the process restarts. */
     val overlayTab: OverlayTab = OverlayTab.Info,
     val tunerReleased: Boolean = false,
+    val tuners: TunerPanel = TunerPanel(),
+)
+
+/** Guide-page list of the open device's tuners. */
+data class TunerPanel(
+    val open: Boolean = false,
+    val loading: Boolean = false,
+    val rows: List<TunerStation> = emptyList(),
+    val error: String? = null,
+    val clearing: Int? = null,
 )
 
 class MeterViewModel(app: Application) : AndroidViewModel(app) {
@@ -134,8 +147,11 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private var playJob: Job? = null
     private var pollJob: Job? = null
     private var hopJob: Job? = null
+    private var tunerJob: Job? = null
+    private var clearJob: Job? = null
     private var playGeneration = 0
     private var hopGeneration = 0
+    private var tunerGeneration = 0
     private var preferredTuner: Int? = null
     private var localIp: String? = null
     private var usingSpecificTuner = false
@@ -281,6 +297,101 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         if (store.loadGuideHost().isNotBlank()) refreshGuide()
     }
 
+    fun openTuners() {
+        val device = (_ui.value.screen as? Screen.Channels)?.device ?: return
+        _ui.update { it.copy(tuners = TunerPanel(open = true, loading = true)) }
+        reloadTuners(device)
+    }
+
+    fun refreshTuners() {
+        val device = (_ui.value.screen as? Screen.Channels)?.device ?: return
+        val panel = _ui.value.tuners
+        if (!panel.open || panel.loading || panel.clearing != null) return
+        reloadTuners(device)
+    }
+
+    private fun stationsFrom(status: DeviceStatus, tunerCount: Int): List<TunerStation> {
+        return tunerStations(status.tuners, tunerCount, status.viewers)
+    }
+
+    private fun reloadTuners(device: HdhrDevice) {
+        tunerJob?.cancel()
+        val generation = ++tunerGeneration
+        _ui.update { state ->
+            if (!state.tuners.open) state
+            else state.copy(tuners = state.tuners.copy(loading = true, error = null))
+        }
+        tunerJob = viewModelScope.launch {
+            clearJob?.join()
+            if (generation != tunerGeneration) return@launch
+            val result = withContext(Dispatchers.IO) {
+                runCatching { stationsFrom(client.tunerStatus(device), device.tunerCount) }
+            }
+            if (generation != tunerGeneration) return@launch
+            _ui.update { state ->
+                if (!state.tuners.open) return@update state
+                result.fold(
+                    onSuccess = { rows ->
+                        state.copy(tuners = state.tuners.copy(loading = false, rows = rows, error = null))
+                    },
+                    onFailure = { error ->
+                        state.copy(
+                            tuners = state.tuners.copy(
+                                loading = false,
+                                error = error.message ?: "Could not read tuners.",
+                            ),
+                        )
+                    },
+                )
+            }
+        }
+    }
+
+    fun closeTuners() {
+        dismissTuners()
+        _ui.update { state ->
+            if (state.tuners == TunerPanel()) state else state.copy(tuners = TunerPanel())
+        }
+    }
+
+    fun forceClearTuner(index: Int) {
+        val device = (_ui.value.screen as? Screen.Channels)?.device ?: return
+        val panel = _ui.value.tuners
+        if (!panel.open || panel.clearing != null || index < 0) return
+        tunerJob?.cancel()
+        val generation = ++tunerGeneration
+        clearJob = viewModelScope.launch {
+            _ui.update { state ->
+                if (!state.tuners.open) state
+                else state.copy(tuners = state.tuners.copy(clearing = index, error = null))
+            }
+            val cleared = withContext(Dispatchers.IO) {
+                runCatching { client.forceClearTuner(device, index) }
+            }
+            val reload = withContext(Dispatchers.IO) {
+                runCatching { stationsFrom(client.tunerStatus(device), device.tunerCount) }
+            }
+            if (generation != tunerGeneration) return@launch
+            _ui.update { state ->
+                val current = state.tuners
+                if (!current.open) return@update state
+                val error = when {
+                    cleared.isFailure -> cleared.exceptionOrNull()?.message ?: "Could not clear the tuner."
+                    reload.isFailure -> reload.exceptionOrNull()?.message ?: "Could not read tuners."
+                    else -> null
+                }
+                state.copy(
+                    tuners = current.copy(
+                        clearing = null,
+                        loading = false,
+                        rows = reload.getOrNull() ?: current.rows,
+                        error = error,
+                    ),
+                )
+            }
+        }
+    }
+
     fun setQuery(value: String) {
         _ui.update { it.copy(query = value) }
     }
@@ -308,6 +419,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         cancelChannelHop()
+        dismissTuners()
         _ui.update {
             it.copy(
                 screen = Screen.Watch(device, channel),
@@ -315,6 +427,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 overlayVisible = true,
                 transcoding = false,
                 pendingChannel = null,
+                tuners = TunerPanel(),
             )
         }
         tune(device, channel, transcode = false, forceAuto = false)
@@ -414,7 +527,10 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 // while the tuner socket closes, so it runs off the UI thread.
                 stopPlayback()
             }
-            is Screen.Channels -> _ui.update { it.copy(screen = Screen.Devices, channelsError = null) }
+            is Screen.Channels -> {
+                dismissTuners()
+                _ui.update { it.copy(screen = Screen.Devices, channelsError = null, tuners = TunerPanel()) }
+            }
             Screen.Devices -> Unit
         }
     }
@@ -438,8 +554,14 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         guideJob?.cancel()
         guideClockJob?.cancel()
         hopJob?.cancel()
+        tunerJob?.cancel()
         stopPlayback()
         engine.release()
+    }
+
+    private fun dismissTuners() {
+        tunerGeneration++
+        tunerJob?.cancel()
     }
 
     private fun refreshGuide() {

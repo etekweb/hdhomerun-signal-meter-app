@@ -14,13 +14,22 @@ import java.util.zip.CRC32
  * Discovery uses the documented type-length-value frame on UDP port 65001:
  * big-endian type and length, payload, then a little-endian Ethernet CRC-32.
  * Device type 1 is a tuner. Device id 0xFFFFFFFF matches every unit.
+ *
+ * Control get/set uses the same frame on TCP port 65001. A set carries the
+ * variable name and the new value, each as a null-terminated string.
  */
 internal object HdhrPackets {
     const val DISCOVER_PORT = 65001
+    const val CONTROL_PORT = 65001
     const val TYPE_DISCOVER_REQ = 0x0002
     const val TYPE_DISCOVER_RPY = 0x0003
+    const val TYPE_GETSET_REQ = 0x0004
+    const val TYPE_GETSET_RPY = 0x0005
     const val TAG_DEVICE_TYPE = 0x01
     const val TAG_DEVICE_ID = 0x02
+    const val TAG_GETSET_NAME = 0x03
+    const val TAG_GETSET_VALUE = 0x04
+    const val TAG_ERROR_MESSAGE = 0x05
     const val TAG_TUNER_COUNT = 0x10
     const val TAG_LINEUP_URL = 0x27
     const val TAG_BASE_URL = 0x2A
@@ -40,6 +49,46 @@ internal object HdhrPackets {
         val payload = ByteArrayOutputStream()
         writeTlvU32(payload, TAG_DEVICE_TYPE, DEVICE_TYPE_TUNER)
         return seal(TYPE_DISCOVER_REQ, payload.toByteArray())
+    }
+
+    /** A get leaves [value] null. A set sends both tags. */
+    fun getSetRequest(name: String, value: String?): ByteArray {
+        return controlFrame(TYPE_GETSET_REQ, name, value, error = null)
+    }
+
+    fun controlFrame(type: Int, name: String?, value: String?, error: String?): ByteArray {
+        val payload = ByteArrayOutputStream()
+        if (name != null) writeTlvText(payload, TAG_GETSET_NAME, name)
+        if (value != null) writeTlvText(payload, TAG_GETSET_VALUE, value)
+        if (error != null) writeTlvText(payload, TAG_ERROR_MESSAGE, error)
+        return seal(type, payload.toByteArray())
+    }
+
+    fun parseGetSetReply(frame: ByteArray): GetSetReply? {
+        if (frame.size < 8) return null
+        val type = readBeU16(frame, 0)
+        val length = readBeU16(frame, 2)
+        if (type != TYPE_GETSET_RPY) return null
+        if (frame.size < 4 + length + 4) return null
+        val expected = crc32(frame, 0, 4 + length)
+        val actual = readLeU32(frame, 4 + length)
+        if (expected != actual) return null
+
+        var name: String? = null
+        var value: String? = null
+        var error: String? = null
+        var index = 4
+        val end = 4 + length
+        while (index < end) {
+            val tlv = readTlv(frame, index, end) ?: return null
+            when (tlv.tag) {
+                TAG_GETSET_NAME -> name = tlv.text()
+                TAG_GETSET_VALUE -> value = tlv.text()
+                TAG_ERROR_MESSAGE -> error = tlv.text()
+            }
+            index = tlv.next
+        }
+        return GetSetReply(name, value, error)
     }
 
     fun seal(type: Int, payload: ByteArray): ByteArray {
@@ -107,6 +156,23 @@ internal object HdhrPackets {
         out.write(value.toInt())
     }
 
+    private fun writeTlvText(out: ByteArrayOutputStream, tag: Int, text: String) {
+        val bytes = text.toByteArray(StandardCharsets.UTF_8)
+        out.write(tag)
+        writeVarLength(out, bytes.size + 1)
+        out.write(bytes)
+        out.write(0)
+    }
+
+    private fun writeVarLength(out: ByteArrayOutputStream, length: Int) {
+        if (length < 128) {
+            out.write(length)
+        } else {
+            out.write((length and 0x7F) or 0x80)
+            out.write(length shr 7)
+        }
+    }
+
     private class Tlv(val tag: Int, val value: ByteArray, val next: Int) {
         fun u32(): Long? = if (value.size == 4) readBeU32(value, 0) else null
         fun text(): String? {
@@ -130,6 +196,76 @@ internal object HdhrPackets {
         if (cursor + length > end) return null
         return Tlv(tag, data.copyOfRange(cursor, cursor + length), cursor + length)
     }
+}
+
+internal data class GetSetReply(val name: String?, val value: String?, val error: String?)
+
+/** Device errors arrive as `ERROR: ...`, sometimes in the value instead of the error tag. */
+internal fun controlProblem(reply: GetSetReply): String? {
+    controlErrorMessage(reply.error)?.let { return it }
+    val value = reply.value?.trim().orEmpty()
+    if (value.startsWith("ERROR:", ignoreCase = true)) return controlErrorMessage(value)
+    return null
+}
+
+internal fun controlErrorMessage(raw: String?): String? {
+    val text = raw?.trim()?.removePrefix("ERROR:")?.trim().orEmpty()
+    return text.ifBlank { null }
+}
+
+/**
+ * One row per real tuner. [tunerCount] is the device's tuner count, so a live-relay
+ * row cannot add a tuner the hardware does not have.
+ * A tuner with no virtual channel is idle, even if a target address is still draining.
+ */
+internal fun tunerStations(
+    status: List<TunerJson>,
+    tunerCount: Int,
+    viewers: List<ChannelViewer> = emptyList(),
+): List<TunerStation> {
+    val byIndex = linkedMapOf<Int, TunerJson>()
+    for (row in status) {
+        val index = row.index ?: continue
+        if (tunerCount > 0 && index >= tunerCount) continue
+        byIndex[index] = row
+    }
+    val count = if (tunerCount > 0) {
+        tunerCount
+    } else {
+        (byIndex.keys.maxOrNull() ?: -1) + 1
+    }
+    return (0 until count).map { index -> stationRow(index, byIndex[index], viewers) }
+}
+
+private fun stationRow(index: Int, row: TunerJson?, viewers: List<ChannelViewer>): TunerStation {
+    val number = row?.vctNumber?.trim().orEmpty()
+    val name = row?.vctName?.trim().orEmpty()
+    if (number.isEmpty() && name.isEmpty()) {
+        return TunerStation(index = index, label = "Idle", target = null, inUse = false)
+    }
+    val label = when {
+        number.isNotEmpty() && name.isNotEmpty() -> "$number $name"
+        number.isNotEmpty() -> number
+        else -> name
+    }
+    val own = targetHost(row?.targetIp)
+    val relay = if (own == null && number.isNotEmpty()) {
+        viewers.filter { it.channel == number }.map { it.target }.distinct()
+    } else {
+        emptyList()
+    }
+    return TunerStation(
+        index = index,
+        label = label,
+        target = own ?: relay.takeIf { it.isNotEmpty() }?.joinToString(", "),
+        inUse = true,
+    )
+}
+
+/** Channel number from a DVR live row, for example `Live channel 4.1`. */
+internal fun liveChannelNumber(name: String?): String? {
+    if (name.isNullOrBlank()) return null
+    return LIVE_CHANNEL.find(name.trim())?.groupValues?.get(1)?.ifBlank { null }
 }
 
 internal fun crc32(data: ByteArray, offset: Int, length: Int): Long {
@@ -221,31 +357,45 @@ internal fun parseLineup(body: String): List<Channel> {
     return channels
 }
 
-internal fun parseStatusJson(body: String): List<TunerJson> {
+internal fun parseStatusJson(body: String): List<TunerJson> = parseDeviceStatus(body).tuners
+
+/**
+ * A DVR adds a `live` row for the native app. That row is a viewer, not a tuner,
+ * so a 2-tuner FLEX must not grow a Tuner 2.
+ */
+internal fun parseDeviceStatus(body: String): DeviceStatus {
     val trimmed = stripBom(body)
     val array = when {
         trimmed.startsWith("[") -> JSONArray(trimmed)
         trimmed.startsWith("{") -> JSONArray().put(JSONObject(trimmed))
-        else -> return emptyList()
+        else -> return DeviceStatus(emptyList(), emptyList())
     }
     val tuners = ArrayList<TunerJson>(array.length())
+    val viewers = ArrayList<ChannelViewer>()
     for (i in 0 until array.length()) {
         val item = array.optJSONObject(i) ?: continue
         val resource = item.optStringOrNull("Resource")
-        tuners += TunerJson(
-            resource = resource,
-            index = tunerIndex(resource) ?: i,
-            vctNumber = item.optStringOrNull("VctNumber"),
-            vctName = item.optStringOrNull("VctName"),
-            frequencyHz = if (item.has("Frequency")) item.optLong("Frequency").takeIf { it > 0 } else null,
-            strengthPercent = item.optPercent("SignalStrengthPercent"),
-            qualityPercent = item.optPercent("SignalQualityPercent"),
-            symbolPercent = item.optPercent("SymbolQualityPercent"),
-            networkRateBps = if (item.has("NetworkRate")) item.optLong("NetworkRate").takeIf { it > 0 } else null,
-            targetIp = item.optStringOrNull("TargetIP"),
-        )
+        val index = tunerIndex(resource)
+        val target = item.targetHosts().firstOrNull()
+        if (index != null) {
+            tuners += TunerJson(
+                resource = resource,
+                index = index,
+                vctNumber = item.optStringOrNull("VctNumber"),
+                vctName = item.optStringOrNull("VctName"),
+                frequencyHz = if (item.has("Frequency")) item.optLong("Frequency").takeIf { it > 0 } else null,
+                strengthPercent = item.optPercent("SignalStrengthPercent"),
+                qualityPercent = item.optPercent("SignalQualityPercent"),
+                symbolPercent = item.optPercent("SymbolQualityPercent"),
+                networkRateBps = if (item.has("NetworkRate")) item.optLong("NetworkRate").takeIf { it > 0 } else null,
+                targetIp = target,
+            )
+        } else {
+            val channel = liveChannelNumber(item.optStringOrNull("Name")) ?: continue
+            if (target != null) viewers += ChannelViewer(channel, target)
+        }
     }
-    return tuners
+    return DeviceStatus(tuners, viewers)
 }
 
 internal fun parseTunerStatusText(body: String): TunerText {
@@ -456,11 +606,43 @@ internal fun hostOf(url: String): String? = try {
     null
 }
 
+/**
+ * Host of a tuner target. Loopback (`[::1]`, `127.0.0.1`) is the DVR pulling its own
+ * tuner for a live relay, so it is not a viewer address.
+ */
 internal fun targetHost(targetIp: String?): String? {
     if (targetIp.isNullOrBlank()) return null
-    val value = targetIp.trim()
-    IPV4_WITH_OPTIONAL_PORT.matchEntire(value)?.let { return it.groupValues[1] }
-    return value.substringBefore('%').substringBefore(':').ifBlank { null }
+    var value = targetIp.trim()
+    if (value.length >= 2 && value.first() == '"' && value.last() == '"') {
+        value = value.substring(1, value.length - 1).trim()
+    }
+    val bracket = BRACKET_HOST.matchEntire(value)
+    if (bracket != null) return publicHost(bracket.groupValues[1])
+    IPV4_WITH_OPTIONAL_PORT.matchEntire(value)?.let { return publicHost(it.groupValues[1]) }
+    if (':' in value && '.' !in value) return publicHost(value.substringBefore('%'))
+    return null
+}
+
+private fun publicHost(host: String): String? {
+    var trimmed = host.trim().trim('"')
+    IPV4_WITH_OPTIONAL_PORT.matchEntire(trimmed)?.let { trimmed = it.groupValues[1] }
+    if (trimmed.isEmpty() || isLoopback(trimmed)) return null
+    return trimmed
+}
+
+private fun isLoopback(host: String): Boolean {
+    return host == "::1" || host.equals("localhost", ignoreCase = true) || host.startsWith("127.")
+}
+
+private fun JSONObject.targetHosts(): List<String> {
+    if (!has("TargetIP") || isNull("TargetIP")) return emptyList()
+    val raw = when (val value = opt("TargetIP")) {
+        is JSONArray -> (0 until value.length()).map { value.optString(it) }
+        is String -> listOf(value)
+        null -> emptyList()
+        else -> listOf(value.toString())
+    }
+    return raw.mapNotNull { targetHost(it) }.distinct()
 }
 
 internal fun tunerIndex(resource: String?): Int? {
@@ -536,3 +718,5 @@ private val DETAIL = Regex("""\(([^)]*)\)""")
 private val HDHR_ERROR = Regex("""\b(80[1-9]|81[01])\b""")
 private val TUNER_INDEX = Regex("""tuner(\d+)""", RegexOption.IGNORE_CASE)
 private val IPV4_WITH_OPTIONAL_PORT = Regex("""(\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?""")
+private val BRACKET_HOST = Regex("""\[([^\]]+)](?::\d+)?""")
+private val LIVE_CHANNEL = Regex("""live channel\s+(\S+)""", RegexOption.IGNORE_CASE)

@@ -139,6 +139,10 @@ class MainActivity : ComponentActivity() {
                         onFilter = viewModel::setFilter,
                         onWatch = viewModel::watch,
                         onReturnScrollHandled = viewModel::consumeReturnChannel,
+                        onOpenTuners = viewModel::openTuners,
+                        onCloseTuners = viewModel::closeTuners,
+                        onRefreshTuners = viewModel::refreshTuners,
+                        onClearTuner = viewModel::forceClearTuner,
                     )
                     is Screen.Watch -> PlayerScreen(
                         state = state,

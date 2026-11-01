@@ -2,6 +2,8 @@ package net.etekweb.hdhrmeter.data
 
 import android.content.Context
 import android.net.wifi.WifiManager
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.HttpURLConnection
@@ -9,6 +11,7 @@ import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
+import java.net.Socket
 import java.net.SocketTimeoutException
 import java.net.URL
 
@@ -87,6 +90,47 @@ class HdhrClient(context: Context) {
             parseStatusJson(response.body)
         } catch (_: Exception) {
             emptyList()
+        }
+    }
+
+    /** Tuner rows for the guide list. Unlike [status], a failed read is reported. */
+    fun tunerStatus(device: HdhrDevice): DeviceStatus {
+        val response = http("${device.baseUrl}/status.json", readMs = 2500)
+        if (response.code !in 200..299) {
+            throw HdhrException("Could not read tuner status (HTTP ${response.code}).")
+        }
+        return try {
+            parseDeviceStatus(response.body)
+        } catch (error: Exception) {
+            throw HdhrException("The tuner status could not be read.", error)
+        }
+    }
+
+    /**
+     * Drops another host's lock, then stops the tuner.
+     * The tuner list button is the confirmation SiliconDust requires before `lockkey force`.
+     */
+    fun forceClearTuner(device: HdhrDevice, index: Int) {
+        if (index < 0) throw HdhrException("That tuner does not exist.")
+        try {
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress(device.host, HdhrPackets.CONTROL_PORT), 4_000)
+                socket.soTimeout = 4_000
+                val output = socket.getOutputStream()
+                val input = socket.getInputStream()
+                exchange(output, input, "/tuner$index/lockkey", "force")
+                val stopped = exchange(output, input, "/tuner$index/channel", "none")
+                val problem = controlProblem(stopped)
+                if (problem != null) throw HdhrException("Could not clear tuner $index. $problem")
+                val value = stopped.value
+                if (value != null && !value.equals("none", ignoreCase = true)) {
+                    throw HdhrException("Could not clear tuner $index. It stayed on $value.")
+                }
+            }
+        } catch (error: HdhrException) {
+            throw error
+        } catch (_: Exception) {
+            throw HdhrException("Could not clear tuner $index.")
         }
     }
 
@@ -239,6 +283,32 @@ class HdhrClient(context: Context) {
         } catch (_: RuntimeException) {
             null
         }
+    }
+
+    private fun exchange(output: OutputStream, input: InputStream, name: String, value: String): GetSetReply {
+        output.write(HdhrPackets.getSetRequest(name, value))
+        output.flush()
+        val frame = readControlFrame(input)
+        return HdhrPackets.parseGetSetReply(frame)
+            ?: throw HdhrException("The tuner returned a control reply that could not be read.")
+    }
+
+    private fun readControlFrame(input: InputStream): ByteArray {
+        val header = readExact(input, 4)
+        val length = ((header[2].toInt() and 0xFF) shl 8) or (header[3].toInt() and 0xFF)
+        if (length > 1452) throw HdhrException("The tuner returned a control reply that could not be read.")
+        return header + readExact(input, length + 4)
+    }
+
+    private fun readExact(input: InputStream, count: Int): ByteArray {
+        val buffer = ByteArray(count)
+        var offset = 0
+        while (offset < count) {
+            val read = input.read(buffer, offset, count - offset)
+            if (read < 0) throw HdhrException("The tuner closed the control connection.")
+            offset += read
+        }
+        return buffer
     }
 
     private data class HttpResponse(val code: Int, val body: String)

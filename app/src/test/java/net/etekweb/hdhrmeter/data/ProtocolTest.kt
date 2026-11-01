@@ -94,6 +94,120 @@ class ProtocolTest {
     }
 
     @Test
+    fun tunerStationsLabelsTheStationAndFillsGaps() {
+        val rows = tunerStations(
+            listOf(
+                TunerJson(
+                    resource = "tuner1",
+                    index = 1,
+                    vctNumber = "7.1",
+                    vctName = "ABC",
+                    frequencyHz = null,
+                    strengthPercent = null,
+                    qualityPercent = null,
+                    symbolPercent = null,
+                    networkRateBps = null,
+                    targetIp = "192.168.1.20:5000",
+                ),
+            ),
+            tunerCount = 2,
+        )
+        assertEquals(listOf(0, 1), rows.map { it.index })
+        assertEquals("Idle", rows[0].label)
+        assertFalse(rows[0].inUse)
+        assertNull(rows[0].target)
+        assertEquals("7.1 ABC", rows[1].label)
+        assertEquals("192.168.1.20", rows[1].target)
+        assertTrue(rows[1].inUse)
+
+        val capped = tunerStations(listOf(tuner(3, null, "10.0.0.8")), tunerCount = 2)
+        assertEquals(listOf(0, 1), capped.map { it.index })
+        assertTrue(capped.all { it.label == "Idle" && !it.inUse })
+
+        val draining = tunerStations(listOf(tuner(0, null, "10.0.0.8")), tunerCount = 1).single()
+        assertEquals("Idle", draining.label)
+        assertFalse(draining.inUse)
+        assertNull(draining.target)
+
+        assertEquals("4.1", tunerStations(listOf(tuner(0, "4.1", null)), tunerCount = 1).single().label)
+        assertTrue(tunerStations(emptyList(), tunerCount = 0).isEmpty())
+    }
+
+    @Test
+    fun liveRelayIsNotAnExtraTuner() {
+        val body = """
+            [{"Resource":"tuner0","VctNumber":"4.1","VctName":"WDIV-HD","TargetIP":"[::1]"},
+            {"Resource":"tuner1"},
+            {"Resource":"live","Name":"Live channel 4.1","TargetIP":"10.0.0.241"}]
+        """.trimIndent()
+        val status = parseDeviceStatus(body)
+        assertEquals(listOf(0, 1), status.tuners.map { it.index })
+        assertNull(status.tuners[0].targetIp)
+        assertEquals("4.1", status.viewers.single().channel)
+        assertEquals("10.0.0.241", status.viewers.single().target)
+
+        val rows = tunerStations(status.tuners, tunerCount = 2, status.viewers)
+        assertEquals(listOf(0, 1), rows.map { it.index })
+        assertEquals("4.1 WDIV-HD", rows[0].label)
+        assertEquals("10.0.0.241", rows[0].target)
+        assertTrue(rows[0].inUse)
+        assertEquals("Idle", rows[1].label)
+        assertFalse(rows[1].inUse)
+        assertNull(targetHost("[::1]"))
+        assertNull(targetHost("127.0.0.1"))
+        assertEquals("10.0.0.241", targetHost("10.0.0.241:5000"))
+    }
+
+    @Test
+    fun getSetReplyReadsValueAndError() {
+        val request = HdhrPackets.getSetRequest("/tuner0/lockkey", "force")
+        assertEquals(0x0004, ((request[0].toInt() and 0xFF) shl 8) or (request[1].toInt() and 0xFF))
+        assertNull(HdhrPackets.parseGetSetReply(request))
+        val sample = HdhrPackets.getSetRequest("n", "v")
+        assertEquals(8, ((sample[2].toInt() and 0xFF) shl 8) or (sample[3].toInt() and 0xFF))
+        assertEquals("03026e0004027600", sample.copyOfRange(4, 12).toHex())
+
+        val reply = HdhrPackets.controlFrame(
+            HdhrPackets.TYPE_GETSET_RPY,
+            "/tuner0/channel",
+            "none",
+            null,
+        )
+        val parsed = HdhrPackets.parseGetSetReply(reply)
+        assertEquals("/tuner0/channel", parsed?.name)
+        assertEquals("none", parsed?.value)
+        assertNull(parsed?.error)
+        assertNull(parsed?.let(::controlProblem))
+
+        val tagged = HdhrPackets.controlFrame(
+            HdhrPackets.TYPE_GETSET_RPY,
+            "/tuner0/channel",
+            null,
+            "ERROR: resource locked by 10.0.0.5",
+        )
+        assertEquals(
+            "resource locked by 10.0.0.5",
+            controlProblem(HdhrPackets.parseGetSetReply(tagged)!!),
+        )
+        val inValue = HdhrPackets.controlFrame(
+            HdhrPackets.TYPE_GETSET_RPY,
+            "/tuner0/channel",
+            "ERROR: unknown getset variable",
+            null,
+        )
+        assertEquals(
+            "unknown getset variable",
+            controlProblem(HdhrPackets.parseGetSetReply(inValue)!!),
+        )
+
+        val broken = reply.copyOf()
+        broken[broken.lastIndex] = broken[broken.lastIndex].inc()
+        assertNull(HdhrPackets.parseGetSetReply(broken))
+        assertNull(controlErrorMessage(null))
+        assertNull(controlErrorMessage("  "))
+    }
+
+    @Test
     fun statusJsonReadsTunerRow() {
         val body = """
             [{"Resource":"tuner0","VctNumber":"7.1","VctName":"ABC","Frequency":177000000,
