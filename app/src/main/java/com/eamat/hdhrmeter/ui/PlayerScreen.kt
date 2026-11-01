@@ -29,6 +29,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -532,7 +533,7 @@ private fun Transport(state: UiState, onStep: (Int) -> Unit) {
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        TextButton(onClick = { onStep(-1) }) { Text("CH −") }
+        ChannelStepButton("CH −") { onStep(-1) }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             when {
                 state.playbackError != null || state.tunerReleased -> Unit
@@ -555,7 +556,18 @@ private fun Transport(state: UiState, onStep: (Int) -> Unit) {
                 Text("Tuner $index", color = Muted, style = MaterialTheme.typography.labelSmall)
             }
         }
-        TextButton(onClick = { onStep(1) }) { Text("CH +") }
+        ChannelStepButton("CH +") { onStep(1) }
+    }
+}
+
+@Composable
+private fun ChannelStepButton(label: String, onClick: () -> Unit) {
+    TextButton(
+        onClick = onClick,
+        shape = RoundedCornerShape(8.dp),
+        colors = ButtonDefaults.textButtonColors(containerColor = Color(0x8012181D)),
+    ) {
+        Text(label)
     }
 }
 
