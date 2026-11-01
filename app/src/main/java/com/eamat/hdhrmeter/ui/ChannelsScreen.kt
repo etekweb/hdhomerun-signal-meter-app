@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -58,9 +59,10 @@ fun ChannelsScreen(
 ) {
     val query = state.query.trim()
     val matched = state.channels.filter { channel ->
-        val matchesQuery = query.isBlank() ||
-            channel.guideNumber.contains(query, ignoreCase = true) ||
-            channel.guideName.contains(query, ignoreCase = true)
+        val programTitle = state.guide
+            ?.airing(channel.guideNumber, channel.guideName, state.guideNowMs)
+            ?.title
+        val matchesQuery = channelMatchesQuery(channel, query, programTitle)
         val matchesFilter = when (state.filter) {
             ChannelFilter.All -> true
             ChannelFilter.Hd -> channel.hd || channel.atsc3
@@ -153,7 +155,16 @@ fun ChannelsScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 singleLine = true,
-                placeholder = { Text("Search channels") },
+                placeholder = { Text("Search channels or programs") },
+                trailingIcon = if (state.query.isEmpty()) {
+                    null
+                } else {
+                    {
+                        IconButton(onClick = { onQuery("") }) {
+                            Icon(Icons.Filled.Close, contentDescription = "Clear search")
+                        }
+                    }
+                },
             )
             Row(
                 modifier = Modifier
@@ -216,6 +227,14 @@ fun ChannelsScreen(
             }
         }
     }
+}
+
+internal fun channelMatchesQuery(channel: Channel, query: String, programTitle: String?): Boolean {
+    val needle = query.trim()
+    if (needle.isBlank()) return true
+    return channel.guideNumber.contains(needle, ignoreCase = true) ||
+        channel.guideName.contains(needle, ignoreCase = true) ||
+        programTitle?.contains(needle, ignoreCase = true) == true
 }
 
 @Composable
