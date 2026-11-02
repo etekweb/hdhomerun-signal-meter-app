@@ -43,6 +43,30 @@ class ProtocolTest {
     }
 
     @Test
+    fun storageDiscoverIsSeparateFromTunerDiscovery() {
+        assertEquals("010400000005", HdhrPackets.discoverStorageRequest().copyOfRange(4, 10).toHex())
+        val payload = tlvU32(HdhrPackets.TAG_DEVICE_TYPE, HdhrPackets.DEVICE_TYPE_STORAGE) +
+            tlvU32(HdhrPackets.TAG_DEVICE_ID, 0x10) +
+            tlvText(HdhrPackets.TAG_BASE_URL, "http://10.0.0.9:59090") +
+            tlvText(HdhrPackets.TAG_STORAGE_URL, "http://dvr.local:59090/recorded_files.json")
+        val packet = HdhrPackets.seal(HdhrPackets.TYPE_DISCOVER_RPY, payload)
+        assertNull(HdhrPackets.parseDiscoverReply(packet))
+        val storage = HdhrPackets.parseStorageDiscoverReply(packet)
+        assertEquals(0x10L, storage?.deviceId)
+        assertEquals("http://10.0.0.9:59090", storage?.baseUrl)
+        assertEquals("http://dvr.local:59090/recorded_files.json", storage?.storageUrl)
+        assertTrue(HdhrPackets.DEVICE_TYPE_STORAGE in storage!!.deviceTypes)
+
+        val tuner = tlvU32(HdhrPackets.TAG_DEVICE_TYPE, HdhrPackets.DEVICE_TYPE_TUNER) +
+            tlvU32(HdhrPackets.TAG_DEVICE_ID, 0x22)
+        assertNull(
+            HdhrPackets.parseStorageDiscoverReply(
+                HdhrPackets.seal(HdhrPackets.TYPE_DISCOVER_RPY, tuner),
+            ),
+        )
+    }
+
+    @Test
     fun storageOnlyReplyIsIgnoredAndTypelessReplyIsKept() {
         val storage = tlvU32(HdhrPackets.TAG_DEVICE_TYPE, 5) + tlvU32(HdhrPackets.TAG_DEVICE_ID, 0x10)
         assertNull(HdhrPackets.parseDiscoverReply(HdhrPackets.seal(HdhrPackets.TYPE_DISCOVER_RPY, storage)))

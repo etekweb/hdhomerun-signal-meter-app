@@ -13,7 +13,7 @@ import java.util.zip.CRC32
  *
  * Discovery uses the documented type-length-value frame on UDP port 65001:
  * big-endian type and length, payload, then a little-endian Ethernet CRC-32.
- * Device type 1 is a tuner. Device id 0xFFFFFFFF matches every unit.
+ * Device type 1 is a tuner. Device type 5 is DVR storage. Device id 0xFFFFFFFF matches every unit.
  *
  * Control get/set uses the same frame on TCP port 65001. A set carries the
  * variable name and the new value, each as a null-terminated string.
@@ -33,8 +33,10 @@ internal object HdhrPackets {
     const val TAG_TUNER_COUNT = 0x10
     const val TAG_LINEUP_URL = 0x27
     const val TAG_BASE_URL = 0x2A
+    const val TAG_STORAGE_URL = 0x28
     const val TAG_MULTI_TYPE = 0x2D
     const val DEVICE_TYPE_TUNER = 0x00000001L
+    const val DEVICE_TYPE_STORAGE = 0x00000005L
 
     /** Classic request: tuner type plus a wildcard id. Older firmware expects both tags. */
     fun discoverRequest(): ByteArray {
@@ -48,6 +50,20 @@ internal object HdhrPackets {
     fun discoverRequestTypeOnly(): ByteArray {
         val payload = ByteArrayOutputStream()
         writeTlvU32(payload, TAG_DEVICE_TYPE, DEVICE_TYPE_TUNER)
+        return seal(TYPE_DISCOVER_REQ, payload.toByteArray())
+    }
+
+    /** Record engines answer a storage-type discover, not the tuner request. */
+    fun discoverStorageRequest(): ByteArray {
+        val payload = ByteArrayOutputStream()
+        writeTlvU32(payload, TAG_DEVICE_TYPE, DEVICE_TYPE_STORAGE)
+        writeTlvU32(payload, TAG_DEVICE_ID, 0xFFFFFFFFL)
+        return seal(TYPE_DISCOVER_REQ, payload.toByteArray())
+    }
+
+    fun discoverStorageRequestTypeOnly(): ByteArray {
+        val payload = ByteArrayOutputStream()
+        writeTlvU32(payload, TAG_DEVICE_TYPE, DEVICE_TYPE_STORAGE)
         return seal(TYPE_DISCOVER_REQ, payload.toByteArray())
     }
 
@@ -107,6 +123,20 @@ internal object HdhrPackets {
     }
 
     fun parseDiscoverReply(datagram: ByteArray): UdpDevice? {
+        val device = parseDiscoverFrame(datagram) ?: return null
+        if (device.deviceTypes.isNotEmpty() && DEVICE_TYPE_TUNER !in device.deviceTypes) return null
+        return device
+    }
+
+    /** A record engine advertises storage type 5, usually with a StorageURL. */
+    fun parseStorageDiscoverReply(datagram: ByteArray): UdpDevice? {
+        val device = parseDiscoverFrame(datagram) ?: return null
+        val storage = DEVICE_TYPE_STORAGE in device.deviceTypes || !device.storageUrl.isNullOrBlank()
+        if (!storage) return null
+        return device
+    }
+
+    private fun parseDiscoverFrame(datagram: ByteArray): UdpDevice? {
         if (datagram.size < 8) return null
         val type = readBeU16(datagram, 0)
         val length = readBeU16(datagram, 2)
@@ -120,6 +150,7 @@ internal object HdhrPackets {
         var tunerCount = 0
         var baseUrl: String? = null
         var lineupUrl: String? = null
+        var storageUrl: String? = null
         val types = mutableListOf<Long>()
         var index = 4
         val end = 4 + length
@@ -139,12 +170,12 @@ internal object HdhrPackets {
                 TAG_TUNER_COUNT -> if (tlv.value.isNotEmpty()) tunerCount = tlv.value[0].toInt() and 0xFF
                 TAG_BASE_URL -> baseUrl = tlv.text()
                 TAG_LINEUP_URL -> lineupUrl = tlv.text()
+                TAG_STORAGE_URL -> storageUrl = tlv.text()
             }
             index = tlv.next
         }
         if (deviceId == 0L) return null
-        if (types.isNotEmpty() && DEVICE_TYPE_TUNER !in types) return null
-        return UdpDevice(deviceId, tunerCount, baseUrl, lineupUrl, types)
+        return UdpDevice(deviceId, tunerCount, baseUrl, lineupUrl, types, storageUrl)
     }
 
     private fun writeTlvU32(out: ByteArrayOutputStream, tag: Int, value: Long) {

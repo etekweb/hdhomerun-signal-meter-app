@@ -40,7 +40,7 @@ import androidx.compose.ui.Modifier
 import net.etekweb.hdhrmeter.ui.AppBottomBar
 import net.etekweb.hdhrmeter.ui.AppTab
 import net.etekweb.hdhrmeter.ui.ChannelsScreen
-import net.etekweb.hdhrmeter.ui.DvrEmptyPage
+import net.etekweb.hdhrmeter.ui.DvrScreen
 import net.etekweb.hdhrmeter.ui.HdhrTheme
 import net.etekweb.hdhrmeter.ui.MeterViewModel
 import net.etekweb.hdhrmeter.ui.PlayerScreen
@@ -170,7 +170,13 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
                                 AppTab.Dvr -> TunerGate(title = "DVR", state = state) {
-                                    DvrEmptyPage()
+                                    DvrScreen(
+                                        state = state,
+                                        onEnsure = viewModel::ensureRecordings,
+                                        onRefresh = viewModel::refreshRecordings,
+                                        onOpen = viewModel::openRecording,
+                                        onClose = viewModel::closeRecording,
+                                    )
                                 }
                                 AppTab.Settings -> SettingsScreen(
                                     state = state,

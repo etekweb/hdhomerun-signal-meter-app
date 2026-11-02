@@ -7,6 +7,7 @@ import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import net.etekweb.hdhrmeter.data.Channel
+import net.etekweb.hdhrmeter.data.Recording
 import net.etekweb.hdhrmeter.data.DeviceStore
 import net.etekweb.hdhrmeter.data.previewHop
 import net.etekweb.hdhrmeter.data.GuideIndex
@@ -139,6 +140,18 @@ data class UiState(
     val overlayTab: OverlayTab = OverlayTab.Info,
     val tunerReleased: Boolean = false,
     val tuners: TunerPanel = TunerPanel(),
+    val dvr: DvrState = DvrState(),
+)
+
+/** Recordings from HDHomeRun DVR storage. [selectedId] opens that recording's info. */
+data class DvrState(
+    val recordings: List<Recording> = emptyList(),
+    val loading: Boolean = false,
+    val loaded: Boolean = false,
+    val error: String? = null,
+    val warning: String? = null,
+    val enginesFound: Int = 0,
+    val selectedId: String? = null,
 )
 
 /** A favorite write the next lineup read must not undo if that read started first. */
@@ -175,6 +188,8 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 
     private var scanJob: Job? = null
+    private var recordingJob: Job? = null
+    private var recordingGeneration = 0
     private var guideJob: Job? = null
     private var guideClockJob: Job? = null
     private var guideGeneration = 0
@@ -237,6 +252,61 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     fun selectTab(tab: AppTab) {
         if (_ui.value.screen is Screen.Watch) return
         _ui.update { state -> if (state.tab == tab) state else state.copy(tab = tab) }
+    }
+
+    /** Loads the DVR library the first time the tab is shown. */
+    fun ensureRecordings() {
+        val dvr = _ui.value.dvr
+        if (dvr.loading || dvr.loaded) return
+        refreshRecordings()
+    }
+
+    fun refreshRecordings() {
+        val generation = ++recordingGeneration
+        recordingJob?.cancel()
+        recordingJob = viewModelScope.launch {
+            _ui.update { it.copy(dvr = it.dvr.copy(loading = true, error = null)) }
+            val result = withContext(Dispatchers.IO) { runCatching { client.loadRecordings() } }
+            if (!isActive || generation != recordingGeneration) return@launch
+            result.onSuccess { library ->
+                _ui.update { state ->
+                    val selected = state.dvr.selectedId?.takeIf { id ->
+                        library.recordings.any { it.id == id }
+                    }
+                    state.copy(
+                        dvr = state.dvr.copy(
+                            recordings = library.recordings,
+                            loading = false,
+                            loaded = true,
+                            error = null,
+                            warning = library.warning,
+                            enginesFound = library.enginesFound,
+                            selectedId = selected,
+                        ),
+                    )
+                }
+            }.onFailure { error ->
+                _ui.update {
+                    it.copy(
+                        dvr = it.dvr.copy(
+                            loading = false,
+                            loaded = true,
+                            error = error.message ?: "Could not read recordings.",
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    fun openRecording(id: String) {
+        if (_ui.value.dvr.recordings.none { it.id == id }) return
+        _ui.update { it.copy(dvr = it.dvr.copy(selectedId = id)) }
+    }
+
+    fun closeRecording() {
+        if (_ui.value.dvr.selectedId == null) return
+        _ui.update { it.copy(dvr = it.dvr.copy(selectedId = null)) }
     }
 
     fun scan() {

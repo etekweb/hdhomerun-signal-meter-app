@@ -97,4 +97,5 @@ data class UdpDevice(
     val baseUrl: String?,
     val lineupUrl: String?,
     val deviceTypes: List<Long>,
+    val storageUrl: String? = null,
 )

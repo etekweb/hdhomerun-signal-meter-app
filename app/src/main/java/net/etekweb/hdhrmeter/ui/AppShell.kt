@@ -1,7 +1,6 @@
 package net.etekweb.hdhrmeter.ui
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -129,28 +128,4 @@ fun TunerUnavailablePage(title: String, checking: Boolean, host: String?) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun DvrEmptyPage() {
-    Scaffold(
-        containerColor = Ink,
-        topBar = {
-            TopAppBar(
-                title = { Text("DVR") },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Ink,
-                    titleContentColor = Paper,
-                ),
-            )
-        },
-    ) { padding ->
-        Box(
-            Modifier
-                .padding(padding)
-                .fillMaxSize(),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text("No recordings.", color = Muted, style = MaterialTheme.typography.bodyLarge)
-        }
-    }
-}
+
