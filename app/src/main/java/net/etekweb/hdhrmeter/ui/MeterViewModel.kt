@@ -87,6 +87,8 @@ data class UiState(
     val scanError: String? = null,
     val manualHost: String = "",
     val guideHost: String = "",
+    /** Address last written by Save. This is the field text, not the loaded host label. */
+    val savedGuideHost: String = "",
     val appliedGuideHost: String = "",
     val guide: GuideIndex? = null,
     val guideNowMs: Long = System.currentTimeMillis(),
@@ -131,12 +133,15 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private val engine = PlaybackEngine(app)
 
     private val _ui = MutableStateFlow(
-        UiState(
-            manualHost = store.loadHost(),
-            guideHost = store.loadGuideHost(),
-            recent = store.loadRecent(),
-            overlayTab = overlayTabFromStored(store.loadOverlayTab()),
-        ),
+        store.loadGuideHost().let { savedGuide ->
+            UiState(
+                manualHost = store.loadHost(),
+                guideHost = savedGuide,
+                savedGuideHost = savedGuide,
+                recent = store.loadRecent(),
+                overlayTab = overlayTabFromStored(store.loadOverlayTab()),
+            )
+        },
     )
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 
@@ -232,6 +237,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             _ui.update {
                 it.copy(
                     guideHost = "",
+                    savedGuideHost = "",
                     appliedGuideHost = "",
                     guide = null,
                     guideLoading = false,
@@ -245,7 +251,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         store.saveGuideHost(raw)
-        _ui.update { it.copy(guideHost = raw, guideError = null) }
+        _ui.update { it.copy(guideHost = raw, savedGuideHost = raw, guideError = null) }
         refreshGuide()
     }
 

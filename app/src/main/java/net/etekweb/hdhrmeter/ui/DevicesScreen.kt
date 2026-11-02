@@ -1,6 +1,7 @@
 package net.etekweb.hdhrmeter.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -97,6 +98,12 @@ fun DevicesScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 item {
+                    GuideProviderField(state, onGuideHostChange, onSaveGuide)
+                }
+                item {
+                    HorizontalDivider(color = InkRaised)
+                }
+                item {
                     Text(
                         "Tuners on this network",
                         style = MaterialTheme.typography.titleMedium,
@@ -108,9 +115,6 @@ fun DevicesScreen(
                         color = Muted,
                         modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
                     )
-                }
-                item {
-                    GuideProviderField(state, onGuideHostChange, onSaveGuide)
                 }
                 items(state.devices, key = { it.deviceId }) { device ->
                     DeviceCard(device, onClick = { onOpen(device) })
@@ -177,10 +181,7 @@ private fun GuideProviderField(
     onSaveGuide: () -> Unit,
 ) {
     val draft = state.guideHost.trim()
-    val nothingToSave = draft.isEmpty() &&
-        state.appliedGuideHost.isEmpty() &&
-        state.guide == null &&
-        state.guideError == null
+    val edited = draft != state.savedGuideHost.trim()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
         Text("Guide provider", style = MaterialTheme.typography.titleMedium, color = Paper)
         Text(
@@ -198,33 +199,55 @@ private fun GuideProviderField(
                 keyboardType = KeyboardType.Uri,
                 imeAction = ImeAction.Go,
             ),
-            keyboardActions = KeyboardActions(onGo = { if (!state.guideLoading) onSaveGuide() }),
+            keyboardActions = KeyboardActions(onGo = {
+                if (edited && !state.guideLoading) onSaveGuide()
+            }),
         )
-        Button(
-            onClick = onSaveGuide,
-            enabled = !state.guideLoading && !nothingToSave,
-            modifier = Modifier.align(Alignment.End),
-        ) {
-            if (state.guideLoading) {
-                CircularProgressIndicator(
-                    modifier = Modifier
-                        .padding(end = 8.dp)
-                        .size(16.dp),
-                    strokeWidth = 2.dp,
-                    color = Ink,
-                )
-            }
-            Text(if (draft.isEmpty()) "Clear" else "Save")
-        }
         val guideError = state.guideError
-        when {
-            state.guideLoading -> Text("Loading the guide…", color = Muted, style = MaterialTheme.typography.bodyMedium)
-            guideError != null -> Text(guideError, color = Bad, style = MaterialTheme.typography.bodyMedium)
-            state.appliedGuideHost.isNotEmpty() -> Text(
-                "Using ${state.appliedGuideHost}.",
-                color = Muted,
-                style = MaterialTheme.typography.bodyMedium,
-            )
+        val showStatus = state.guideLoading || guideError != null || state.appliedGuideHost.isNotEmpty()
+        if (showStatus || edited) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(Modifier.weight(1f)) {
+                    when {
+                        state.guideLoading -> Text(
+                            "Loading the guide…",
+                            color = Muted,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        guideError != null -> Text(
+                            guideError,
+                            color = Bad,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        state.appliedGuideHost.isNotEmpty() -> Text(
+                            "Using ${state.appliedGuideHost}.",
+                            color = Muted,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+                if (edited) {
+                    Button(
+                        onClick = onSaveGuide,
+                        enabled = !state.guideLoading,
+                    ) {
+                        if (state.guideLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier
+                                    .padding(end = 8.dp)
+                                    .size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = Ink,
+                            )
+                        }
+                        Text(if (draft.isEmpty()) "Clear" else "Save")
+                    }
+                }
+            }
         }
     }
 }

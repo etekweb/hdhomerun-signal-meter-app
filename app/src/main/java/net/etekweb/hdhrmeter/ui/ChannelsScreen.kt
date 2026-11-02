@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -32,12 +31,17 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TooltipAnchorPosition
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.window.Dialog
 import net.etekweb.hdhrmeter.R
@@ -46,6 +50,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -54,6 +60,28 @@ import net.etekweb.hdhrmeter.data.GuideProgram
 import net.etekweb.hdhrmeter.data.HdhrDevice
 import net.etekweb.hdhrmeter.data.TunerStation
 import net.etekweb.hdhrmeter.data.channelsInViewOrder
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BarTooltip(
+    label: String,
+    content: @Composable () -> Unit,
+) {
+    val state = rememberTooltipState()
+    val haptic = LocalHapticFeedback.current
+    val visible = state.isVisible
+    LaunchedEffect(visible) {
+        if (visible) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+    }
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(
+            TooltipAnchorPosition.Below,
+        ),
+        tooltip = { PlainTooltip { Text(label) } },
+        state = state,
+        content = content,
+    )
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -137,17 +165,18 @@ fun ChannelsScreen(
                     }
                 },
                 actions = {
-                    TextButton(onClick = onOpenTuners) {
-                        Icon(
-                            painterResource(R.drawable.ic_tuners),
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("Tuners")
+                    BarTooltip("Tuners") {
+                        IconButton(onClick = onOpenTuners) {
+                            Icon(
+                                painterResource(R.drawable.ic_tuners),
+                                contentDescription = "Tuners",
+                            )
+                        }
                     }
-                    IconButton(onClick = onRefresh, enabled = !state.channelsLoading) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "Refresh channels")
+                    BarTooltip("Refresh channels") {
+                        IconButton(onClick = onRefresh, enabled = !state.channelsLoading) {
+                            Icon(Icons.Filled.Refresh, contentDescription = "Refresh channels")
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
