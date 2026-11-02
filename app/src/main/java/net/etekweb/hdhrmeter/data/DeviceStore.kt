@@ -11,10 +11,57 @@ class DeviceStore(context: Context) {
         prefs.edit().putString(KEY_HOST, host).apply()
     }
 
-    fun loadGuideHost(): String = prefs.getString(KEY_GUIDE_HOST, "").orEmpty()
+    fun loadGuideLibrary(): GuideLibrary {
+        if (prefs.contains(KEY_GUIDE_SOURCES)) {
+            val mode = if (prefs.contains(KEY_GUIDE_MODE)) prefs.getString(KEY_GUIDE_MODE, null) else null
+            return resolveGuideLibrary(
+                mode,
+                prefs.getString(KEY_GUIDE_SOURCES, "").orEmpty(),
+                prefs.getString(KEY_GUIDE_ACTIVE, "").orEmpty(),
+            )
+        }
+        val migrated = migrateLegacyGuideHost(prefs.getString(KEY_GUIDE_HOST, "").orEmpty())
+        val library = resolveGuideLibrary(
+            storedMode = if (migrated.isEmpty()) GUIDE_MODE_NONE else GUIDE_MODE_URL,
+            storedSources = migrated.joinToString("\n"),
+            storedActive = migrated.firstOrNull().orEmpty(),
+        )
+        if (migrated.isNotEmpty() || prefs.contains(KEY_GUIDE_HOST)) {
+            saveGuideLibrary(library.sources, library.activeUrl, library.mode)
+        }
+        return library
+    }
 
-    fun saveGuideHost(host: String) {
-        prefs.edit().putString(KEY_GUIDE_HOST, host.trim()).apply()
+    fun saveGuideLibrary(sources: List<String>, activeUrl: String, mode: GuideMode) {
+        val clean = sources.mapNotNull { normalizeGuideUrl(it) }.distinct()
+        val active = normalizeGuideUrl(activeUrl)?.takeIf { it in clean }.orEmpty()
+        val resolved = when (mode) {
+            GuideMode.Url -> if (active.isEmpty()) GuideMode.None else GuideMode.Url
+            else -> mode
+        }
+        val storedActive = if (resolved == GuideMode.Url) active else ""
+        val storedMode = when (resolved) {
+            GuideMode.None -> GUIDE_MODE_NONE
+            GuideMode.HdHomeRun -> GUIDE_MODE_HDHOMERUN
+            GuideMode.Url -> GUIDE_MODE_URL
+        }
+        prefs.edit()
+            .putString(KEY_GUIDE_SOURCES, clean.joinToString("\n"))
+            .putString(KEY_GUIDE_ACTIVE, storedActive)
+            .putString(KEY_GUIDE_MODE, storedMode)
+            .apply()
+    }
+
+    fun loadSavedTuners(): List<HdhrDevice> {
+        val raw = prefs.getString(KEY_SAVED_TUNERS, null)
+        if (raw != null) return decodeTuners(raw)
+        val seeded = listOfNotNull(loadRecent())
+        saveSavedTuners(seeded)
+        return seeded
+    }
+
+    fun saveSavedTuners(devices: List<HdhrDevice>) {
+        prefs.edit().putString(KEY_SAVED_TUNERS, encodeTuners(devices)).apply()
     }
 
     fun loadRecent(): HdhrDevice? {
@@ -45,6 +92,18 @@ class DeviceStore(context: Context) {
             .apply()
     }
 
+    fun clearRecent() {
+        prefs.edit()
+            .remove(KEY_ID)
+            .remove(KEY_NAME)
+            .remove(KEY_MODEL)
+            .remove(KEY_FIRMWARE)
+            .remove(KEY_BASE)
+            .remove(KEY_DEVICE_HOST)
+            .remove(KEY_TUNERS)
+            .apply()
+    }
+
     /** Guide numbers newest-first. One list per tuner, because lineups differ. */
     fun loadRecentChannels(deviceId: String): List<String> {
         val raw = prefs.getString(recentChannelsKey(deviceId), null) ?: return emptyList()
@@ -70,6 +129,10 @@ class DeviceStore(context: Context) {
         const val PREFS = "hdhr_meter"
         const val KEY_HOST = "manual_host"
         const val KEY_GUIDE_HOST = "guide_host"
+        const val KEY_GUIDE_SOURCES = "guide_sources"
+        const val KEY_GUIDE_ACTIVE = "guide_active"
+        const val KEY_GUIDE_MODE = "guide_mode"
+        const val KEY_SAVED_TUNERS = "saved_tuners"
         const val KEY_RECENT_CHANNELS = "recent_channels_"
         const val KEY_OVERLAY_TAB = "overlay_tab"
         const val KEY_ID = "device_id"

@@ -6,9 +6,10 @@ The phone and the HDHomeRun need to be on the same LAN. The app uses the tunerâ€
 
 ## What you can do
 
-- Scan the network, or type an IP address or hostname.
+- Lineup, DVR, and Settings are tabs along the bottom. Lineup is the channel list for the selected tuner. DVR is empty for now.
 - Open the channel lineup. Search, and filter to HD, favorites, or recently viewed channels. Recents lists channels you have started watching, newest first, and keeps that list for each tuner. Copy-protected channels are listed and marked Protected. They are not played.
-- Set a guide provider by IP address. The app reads `http://<address>:8080/xmlguide.xmltv` and shows the program on now in the channel lineup and on the player. Each lineup row also shows the next program and the time it starts.
+- In Settings, choose None, HDHomeRun from the connected tuner, or one or more guide URLs such as `http://10.0.0.241:8080/xmlguide.xmltv`. The lineup and the player show the program on now, the next program, and the time it starts.
+- Tuners found on the network are listed with tuners you have added. Choose one. If the last tuner does not answer, Lineup and DVR ask you to pick a tuner in Settings.
 - Watch a channel. The stream stops when you leave the player, so the tuner is free for something else. Pressing Home while a channel is playing moves the picture into the system picture-in-picture window and keeps the tuner. Closing that window releases the tuner. Resume tunes it again.
 - Read the overlay while a channel is playing. The corner by the back button shows the channel number and call sign. The panel has Info and Signal tabs. Info is selected until you pick Signal, and that choice is remembered.
   - Info: program name, episode number, episode title, air time, and description. A smaller block at the bottom shows the next program.

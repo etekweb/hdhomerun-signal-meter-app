@@ -31,6 +31,111 @@ class GuideTest {
     }
 
     @Test
+    fun guideProviderKeepsTheFullXmlUrl() {
+        assertEquals(
+            "http://10.0.0.241:8080/xmlguide.xmltv",
+            normalizeGuideUrl("  http://10.0.0.241:8080/xmlguide.xmltv "),
+        )
+        assertEquals(
+            "http://10.0.0.50:9090/custom/guide.xml",
+            normalizeGuideUrl("HTTP://10.0.0.50:9090/custom/guide.xml"),
+        )
+        assertEquals(
+            "https://guide.example:8443/tv/guide.xml?day=1",
+            normalizeGuideUrl("https://guide.example:8443/tv/guide.xml?day=1"),
+        )
+        assertEquals(
+            "http://[2001:db8::1]:8080/xmlguide.xmltv",
+            normalizeGuideUrl("http://[2001:db8::1]:8080/xmlguide.xmltv"),
+        )
+        assertNull(normalizeGuideUrl("10.0.0.241"))
+        assertNull(normalizeGuideUrl("guide.local"))
+        assertNull(normalizeGuideUrl("http://10.0.0.241:8080/"))
+        assertNull(normalizeGuideUrl("http://10.0.0.241:8080/lineup.json"))
+        assertNull(normalizeGuideUrl("ftp://10.0.0.241/xmlguide.xmltv"))
+        assertNull(normalizeGuideUrl("   "))
+    }
+
+    @Test
+    fun guideChoiceRestoresNoneHdHomeRunOrTheSavedUrl() {
+        val sources = "http://10.0.0.241:8080/xmlguide.xmltv\nhttp://10.0.0.50:9090/custom/guide.xml"
+        val first = "http://10.0.0.241:8080/xmlguide.xmltv"
+        val second = "http://10.0.0.50:9090/custom/guide.xml"
+
+        val legacy = resolveGuideLibrary(null, sources, first)
+        assertEquals(GuideMode.Url, legacy.mode)
+        assertEquals(first, legacy.activeUrl)
+        assertEquals(listOf(first, second), legacy.sources)
+
+        val blankActive = resolveGuideLibrary(null, sources, "")
+        assertEquals(GuideMode.Url, blankActive.mode)
+        assertEquals(first, blankActive.activeUrl)
+
+        val cleared = resolveGuideLibrary(null, "", "")
+        assertEquals(GuideMode.None, cleared.mode)
+        assertEquals("", cleared.activeUrl)
+
+        val none = resolveGuideLibrary(GUIDE_MODE_NONE, sources, first)
+        assertEquals(GuideMode.None, none.mode)
+        assertEquals("", none.activeUrl)
+        assertEquals(listOf(first, second), none.sources)
+
+        val hdhr = resolveGuideLibrary(GUIDE_MODE_HDHOMERUN, sources, first)
+        assertEquals(GuideMode.HdHomeRun, hdhr.mode)
+        assertEquals("", hdhr.activeUrl)
+        assertEquals(listOf(first, second), hdhr.sources)
+
+        val earlierName = resolveGuideLibrary(GUIDE_MODE_PSIP, sources, first)
+        assertEquals(GuideMode.HdHomeRun, earlierName.mode)
+        assertEquals("", earlierName.activeUrl)
+
+        val url = resolveGuideLibrary(GUIDE_MODE_URL, sources, second)
+        assertEquals(GuideMode.Url, url.mode)
+        assertEquals(second, url.activeUrl)
+
+        val dropped = resolveGuideLibrary(GUIDE_MODE_URL, sources, "http://10.0.0.9/missing.xml")
+        assertEquals(GuideMode.Url, dropped.mode)
+        assertEquals(first, dropped.activeUrl)
+
+        val emptyUrl = resolveGuideLibrary(GUIDE_MODE_URL, "", "")
+        assertEquals(GuideMode.None, emptyUrl.mode)
+        assertEquals("", emptyUrl.activeUrl)
+    }
+
+    @Test
+    fun hdhrGuideUrlUsesTheTunerToken() {
+        assertEquals(
+            "https://api.hdhomerun.com/api/xmltv?DeviceAuth=abc123",
+            hdhrGuideUrl(" abc123 "),
+        )
+        assertEquals(
+            "https://api.hdhomerun.com/api/xmltv?DeviceAuth=a%2Bb%2Fc",
+            hdhrGuideUrl("a+b/c"),
+        )
+        assertEquals("hdhomerun:1234ABCD", hdhrGuideKey("1234ABCD"))
+        assertNull(hdhrGuideUrl("   "))
+        assertNull(hdhrGuideUrl("bad token"))
+    }
+
+    @Test
+    fun legacyGuideHostBecomesOneUrl() {
+        assertEquals(
+            listOf("http://10.0.0.241:8080/xmlguide.xmltv"),
+            migrateLegacyGuideHost("10.0.0.241"),
+        )
+        assertEquals(
+            listOf("http://10.0.0.50:9090/custom/guide.xml"),
+            migrateLegacyGuideHost("http://10.0.0.50:9090/custom/guide.xml"),
+        )
+        assertEquals(
+            listOf("http://10.0.0.241:8080/xmlguide.xmltv"),
+            decodeGuideSources("\nhttp://10.0.0.241:8080/xmlguide.xmltv\nnot a url\n"),
+        )
+        assertEquals(emptyList<String>(), migrateLegacyGuideHost("   "))
+        assertEquals(emptyList<String>(), migrateLegacyGuideHost("not a host"))
+    }
+
+    @Test
     fun xmltvTimeHonorsOffset() {
         val expected = LocalDateTime.of(2026, 10, 31, 1, 0)
             .toInstant(ZoneOffset.ofHours(-4))

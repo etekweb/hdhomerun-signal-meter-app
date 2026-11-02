@@ -62,6 +62,25 @@ class HdhrClient(context: Context) {
         throw HdhrException("No HDHomeRun answered at $host.", lastError)
     }
 
+    /**
+     * Stores the favorite on the tuner, so every device on this lineup shares it.
+     * [favorite] true posts `+`, false posts `-`. This does not hide the channel.
+     */
+    fun setChannelFavorite(device: HdhrDevice, guideNumber: String, favorite: Boolean) {
+        val url = favoritePostUrl(device.baseUrl, guideNumber, favorite)
+            ?: throw HdhrException("That channel cannot be marked as a favorite.")
+        try {
+            val response = http(url, method = "POST")
+            if (response.code !in 200..299) {
+                throw HdhrException("Could not update favorites (HTTP ${response.code}).")
+            }
+        } catch (error: HdhrException) {
+            throw error
+        } catch (_: Exception) {
+            throw HdhrException("Could not update favorites.")
+        }
+    }
+
     fun lineup(device: HdhrDevice): List<Channel> {
         val tuned = http("${device.baseUrl}/lineup.json?tuning")
         val response = if (tuned.code in 200..299 && tuned.body.trimStart().startsWith("[")) {
@@ -80,6 +99,23 @@ class HdhrClient(context: Context) {
     }
 
     fun loadGuide(url: String, nowEpochMs: Long = System.currentTimeMillis()): GuideIndex {
+        return fetchGuide(url, nowEpochMs)
+    }
+
+    /**
+     * Guide associated with this tuner. DeviceAuth is read from the tuner's
+     * discover.json and sent to SiliconDust's XMLTV service. The token rotates,
+     * so it is not saved.
+     */
+    fun loadHdhrGuide(device: HdhrDevice, nowEpochMs: Long = System.currentTimeMillis()): GuideIndex {
+        val discover = http("${device.baseUrl.trimEnd('/')}/discover.json", readMs = 8_000)
+        if (discover.code !in 200..299) {
+            throw HdhrException("Could not read the tuner (HTTP ${discover.code}).")
+        }
+        val auth = parseDeviceAuth(discover.body)
+            ?: throw HdhrException("The tuner did not provide guide access.")
+        val url = hdhrGuideUrl(auth)
+            ?: throw HdhrException("The tuner did not provide guide access.")
         return fetchGuide(url, nowEpochMs)
     }
 
@@ -313,15 +349,26 @@ class HdhrClient(context: Context) {
 
     private data class HttpResponse(val code: Int, val body: String)
 
-    private fun http(url: String, connectMs: Int = 4000, readMs: Int = 4000): HttpResponse {
+    private fun http(
+        url: String,
+        method: String = "GET",
+        connectMs: Int = 4000,
+        readMs: Int = 4000,
+    ): HttpResponse {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = method
             connectTimeout = connectMs
             readTimeout = readMs
             instanceFollowRedirects = true
             setRequestProperty("Accept", "application/json, text/plain, */*")
             setRequestProperty("User-Agent", "HDHomeRunSignalMeter")
+            if (method == "POST") {
+                doOutput = true
+                setFixedLengthStreamingMode(0)
+            }
         }
         try {
+            if (method == "POST") connection.outputStream.use { }
             val code = connection.responseCode
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
             val body = stream?.use { it.readBytes().toString(Charsets.UTF_8) }.orEmpty()

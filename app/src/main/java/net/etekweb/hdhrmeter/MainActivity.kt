@@ -31,12 +31,22 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.ui.Modifier
+import net.etekweb.hdhrmeter.ui.AppBottomBar
+import net.etekweb.hdhrmeter.ui.AppTab
 import net.etekweb.hdhrmeter.ui.ChannelsScreen
-import net.etekweb.hdhrmeter.ui.DevicesScreen
+import net.etekweb.hdhrmeter.ui.DvrEmptyPage
 import net.etekweb.hdhrmeter.ui.HdhrTheme
 import net.etekweb.hdhrmeter.ui.MeterViewModel
 import net.etekweb.hdhrmeter.ui.PlayerScreen
 import net.etekweb.hdhrmeter.ui.Screen
+import net.etekweb.hdhrmeter.ui.SettingsScreen
+import net.etekweb.hdhrmeter.ui.TunerGate
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MeterViewModel by viewModels()
@@ -116,35 +126,12 @@ class MainActivity : ComponentActivity() {
                     window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 }
             }
-            BackHandler(enabled = state.screen !is Screen.Devices) {
+            BackHandler(enabled = state.screen is Screen.Watch) {
                 viewModel.onBack()
             }
             HdhrTheme {
-                when (val screen = state.screen) {
-                    Screen.Devices -> DevicesScreen(
-                        state = state,
-                        onScan = viewModel::scan,
-                        onHostChange = viewModel::setManualHost,
-                        onConnect = viewModel::connectManual,
-                        onOpen = viewModel::open,
-                        onGuideHostChange = viewModel::setGuideHost,
-                        onSaveGuide = viewModel::saveGuide,
-                    )
-                    is Screen.Channels -> ChannelsScreen(
-                        state = state,
-                        device = screen.device,
-                        onBack = viewModel::onBack,
-                        onRefresh = viewModel::refreshLineup,
-                        onQuery = viewModel::setQuery,
-                        onFilter = viewModel::setFilter,
-                        onWatch = viewModel::watch,
-                        onReturnScrollHandled = viewModel::consumeReturnChannel,
-                        onOpenTuners = viewModel::openTuners,
-                        onCloseTuners = viewModel::closeTuners,
-                        onRefreshTuners = viewModel::refreshTuners,
-                        onClearTuner = viewModel::forceClearTuner,
-                    )
-                    is Screen.Watch -> PlayerScreen(
+                if (state.screen is Screen.Watch) {
+                    PlayerScreen(
                         state = state,
                         onAttach = viewModel::attachVideo,
                         onDetach = viewModel::detachVideo,
@@ -157,6 +144,52 @@ class MainActivity : ComponentActivity() {
                         showChrome = showChrome,
                         onVideoBounds = ::onVideoBounds,
                     )
+                } else {
+                    Column(Modifier.fillMaxSize().imePadding()) {
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .fillMaxWidth(),
+                        ) {
+                            when (state.tab) {
+                                AppTab.Lineup -> TunerGate(title = "Lineup", state = state) { device ->
+                                    ChannelsScreen(
+                                        state = state,
+                                        device = device,
+                                        onRefresh = viewModel::refreshLineup,
+                                        onQuery = viewModel::setQuery,
+                                        onFilter = viewModel::setFilter,
+                                        onWatch = viewModel::watch,
+                                        onReturnScrollHandled = viewModel::consumeReturnChannel,
+                                        onOpenTuners = viewModel::openTuners,
+                                        onCloseTuners = viewModel::closeTuners,
+                                        onRefreshTuners = viewModel::refreshTuners,
+                                        onClearTuner = viewModel::forceClearTuner,
+                                        onToggleFavorite = viewModel::toggleFavorite,
+                                        onDismissFavoriteError = viewModel::dismissFavoriteError,
+                                    )
+                                }
+                                AppTab.Dvr -> TunerGate(title = "DVR", state = state) {
+                                    DvrEmptyPage()
+                                }
+                                AppTab.Settings -> SettingsScreen(
+                                    state = state,
+                                    onScan = viewModel::scan,
+                                    onHostChange = viewModel::setManualHost,
+                                    onAddDevice = viewModel::addDevice,
+                                    onSelectDevice = viewModel::selectDevice,
+                                    onRemoveDevice = viewModel::removeSavedDevice,
+                                    onGuideDraft = viewModel::setGuideDraft,
+                                    onAddGuide = viewModel::addGuideSource,
+                                    onSelectNone = viewModel::selectGuideNone,
+                                    onSelectHdHomeRun = viewModel::selectGuideHdHomeRun,
+                                    onSelectGuide = viewModel::selectGuideSource,
+                                    onRemoveGuide = viewModel::removeGuideSource,
+                                )
+                            }
+                        }
+                        AppBottomBar(state.tab, viewModel::selectTab)
+                    }
                 }
             }
         }

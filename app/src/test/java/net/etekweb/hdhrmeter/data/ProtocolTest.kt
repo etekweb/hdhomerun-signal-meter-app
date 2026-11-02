@@ -66,6 +66,15 @@ class ProtocolTest {
         assertEquals("192.168.1.50", device.host)
         assertEquals("http://192.168.1.50", device.baseUrl)
         assertEquals(4, device.tunerCount)
+        assertNull(parseDeviceAuth(body))
+    }
+
+    @Test
+    fun discoverJsonProvidesGuideAccess() {
+        val body = """{"DeviceID":"1234ABCD","DeviceAuth":" token+1 "}"""
+        assertEquals("token+1", parseDeviceAuth(body))
+        assertNull(parseDeviceAuth("not json"))
+        assertNull(parseDeviceAuth(""))
     }
 
     @Test
@@ -91,6 +100,20 @@ class ProtocolTest {
         assertTrue(channels.first { it.guideNumber == "2.10" }.hd)
         assertTrue(channels.first { it.guideNumber == "2.10" }.atsc3)
         assertTrue(channels.first { it.guideNumber == "4.1" }.drm)
+    }
+
+    @Test
+    fun favoritePostKeepsThePlusSign() {
+        assertEquals(
+            "http://10.0.0.25/lineup.post?favorite=+2.1",
+            favoritePostUrl("http://10.0.0.25/", "2.1", favorite = true),
+        )
+        assertEquals(
+            "http://10.0.0.25/lineup.post?favorite=-18.10",
+            favoritePostUrl("http://10.0.0.25", " 18.10 ", favorite = false),
+        )
+        assertNull(favoritePostUrl("http://10.0.0.25", "", favorite = true))
+        assertNull(favoritePostUrl("http://10.0.0.25", "2.1;reboot", favorite = true))
     }
 
     @Test

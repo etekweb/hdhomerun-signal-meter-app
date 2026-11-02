@@ -294,6 +294,12 @@ private fun readLeU32(data: ByteArray, offset: Int): Long {
 
 internal fun deviceIdHex(id: Long): String = String.format(Locale.US, "%08X", id and 0xFFFFFFFFL)
 
+/** DeviceAuth from discover.json. It rotates, so callers read it again for each guide load. */
+internal fun parseDeviceAuth(body: String): String? {
+    val json = runCatching { JSONObject(stripBom(body)) }.getOrNull() ?: return null
+    return json.optStringOrNull("DeviceAuth")
+}
+
 internal fun parseDiscoverJson(body: String, fallbackHost: String): HdhrDevice {
     val json = JSONObject(stripBom(body))
     val base = usableBase(json.optStringOrNull("BaseURL"), fallbackHost)
@@ -355,6 +361,21 @@ internal fun parseLineup(body: String): List<Channel> {
     }
     channels.sortWith { a, b -> compareGuideNumbers(a.guideNumber, b.guideNumber) }
     return channels
+}
+
+private val FAVORITE_GUIDE_NUMBER = Regex("[0-9]+(?:\\.[0-9]+)?")
+
+/**
+ * Adds or removes one channel on the tuner's favorite list.
+ * The lineup page posts `favorite=+2.1` or `favorite=-2.1`. The plus is literal.
+ * Percent-encoding it makes the tuner miss the command.
+ * Returns null when [guideNumber] is not a channel number the tuner can store.
+ */
+internal fun favoritePostUrl(baseUrl: String, guideNumber: String, favorite: Boolean): String? {
+    val number = guideNumber.trim()
+    if (!FAVORITE_GUIDE_NUMBER.matches(number)) return null
+    val prefix = if (favorite) "+" else "-"
+    return "${baseUrl.trimEnd('/')}/lineup.post?favorite=$prefix$number"
 }
 
 internal fun parseStatusJson(body: String): List<TunerJson> = parseDeviceStatus(body).tuners

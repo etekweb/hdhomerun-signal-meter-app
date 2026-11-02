@@ -6,7 +6,9 @@ import java.io.BufferedInputStream
 import java.io.InputStream
 import java.io.PushbackInputStream
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.URL
+import java.net.URLEncoder
 import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.util.Locale
@@ -95,7 +97,108 @@ internal fun List<GuideProgram>.upcomingAt(nowMs: Long): GuideProgram? {
     return null
 }
 
-/** `10.0.0.241` becomes `http://10.0.0.241:8080/xmlguide.xmltv`. */
+/** Which guide the lineup uses. [Url] is one of the saved XMLTV addresses. */
+enum class GuideMode { None, HdHomeRun, Url }
+
+/** Saved XMLTV addresses, plus the built-in choice in [mode]. [activeUrl] is set only for [GuideMode.Url]. */
+data class GuideLibrary(
+    val sources: List<String>,
+    val activeUrl: String,
+    val mode: GuideMode,
+)
+
+internal const val GUIDE_MODE_NONE = "none"
+internal const val GUIDE_MODE_HDHOMERUN = "hdhomerun"
+/** Earlier builds stored the HDHomeRun guide choice under this name. */
+internal const val GUIDE_MODE_PSIP = "psip"
+internal const val GUIDE_MODE_URL = "url"
+
+internal const val GUIDE_URL_HINT =
+    "Enter the full guide URL, such as http://10.0.0.241:8080/xmlguide.xmltv."
+
+/**
+ * Restores the guide choice. A stored mode wins. Older installs have no mode:
+ * a saved XML URL stays selected, and a cleared guide is [GuideMode.None].
+ */
+internal fun resolveGuideLibrary(
+    storedMode: String?,
+    storedSources: String,
+    storedActive: String,
+): GuideLibrary {
+    val sources = decodeGuideSources(storedSources)
+    val active = normalizeGuideUrl(storedActive)?.takeIf { it in sources }
+    val requested = when (storedMode?.trim()?.lowercase(Locale.US)) {
+        GUIDE_MODE_NONE -> GuideMode.None
+        GUIDE_MODE_HDHOMERUN, GUIDE_MODE_PSIP -> GuideMode.HdHomeRun
+        GUIDE_MODE_URL -> GuideMode.Url
+        else -> if (active != null || sources.isNotEmpty()) GuideMode.Url else GuideMode.None
+    }
+    val mode = if (requested == GuideMode.Url && sources.isEmpty()) GuideMode.None else requested
+    val url = if (mode == GuideMode.Url) active ?: sources.first() else ""
+    return GuideLibrary(sources, url, mode)
+}
+
+/** Identity of an HDHomeRun guide loaded for one tuner. It is not a URL and is not saved. */
+internal fun hdhrGuideKey(deviceId: String): String = "hdhomerun:$deviceId"
+
+/**
+ * SiliconDust XMLTV for the tuner that presented [deviceAuth].
+ * The token is read from that tuner's discover.json on each load.
+ */
+internal fun hdhrGuideUrl(deviceAuth: String): String? {
+    val auth = deviceAuth.trim()
+    if (auth.isEmpty() || auth.any { it.isISOControl() || it.isWhitespace() }) return null
+    val encoded = URLEncoder.encode(auth, Charsets.UTF_8.name())
+    return "https://api.hdhomerun.com/api/xmltv?DeviceAuth=$encoded"
+}
+
+/**
+ * A guide provider is the XMLTV document itself, for example
+ * `http://10.0.0.241:8080/xmlguide.xmltv`. A bare IP is rejected.
+ * The returned URL uses a lowercase scheme and host.
+ */
+internal fun normalizeGuideUrl(raw: String): String? {
+    val text = raw.trim()
+    if (text.isEmpty()) return null
+    val uri = runCatching { URI(text) }.getOrNull() ?: return null
+    if (!uri.userInfo.isNullOrBlank()) return null
+    val scheme = uri.scheme?.lowercase(Locale.US) ?: return null
+    if (scheme != "http" && scheme != "https") return null
+    val host = uri.host?.trim()?.lowercase(Locale.US)?.takeIf { it.isNotEmpty() } ?: return null
+    val path = uri.rawPath ?: return null
+    if (!path.lowercase(Locale.US).contains("xml")) return null
+    val port = if (uri.port == -1) "" else ":${uri.port}"
+    val query = if (uri.rawQuery.isNullOrEmpty()) "" else "?${uri.rawQuery}"
+    val bareHost = host.removePrefix("[").removeSuffix("]")
+    val authority = if (':' in bareHost) "[$bareHost]" else bareHost
+    return "$scheme://$authority$port$path$query"
+}
+
+/** One URL per line. Lines that are not XMLTV addresses are dropped. */
+internal fun decodeGuideSources(stored: String): List<String> {
+    return stored.lineSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .mapNotNull { normalizeGuideUrl(it) }
+        .distinct()
+        .toList()
+}
+
+/**
+ * A previous version stored a host such as `10.0.0.241` and read
+ * `http://<host>:8080/xmlguide.xmltv`. A value that is already an XML URL is kept.
+ */
+internal fun migrateLegacyGuideHost(raw: String): List<String> {
+    val trimmed = raw.trim()
+    if (trimmed.isEmpty()) return emptyList()
+    val url = normalizeGuideUrl(trimmed) ?: guideUrlForInput(trimmed) ?: return emptyList()
+    return listOf(url)
+}
+
+/**
+ * Older builds stored only a host. `10.0.0.241` becomes
+ * `http://10.0.0.241:8080/xmlguide.xmltv`. New providers use [normalizeGuideUrl].
+ */
 internal fun guideUrlForInput(raw: String): String? {
     val host = normalizeHostInput(raw) ?: return null
     val bare = if (host.startsWith("[")) {

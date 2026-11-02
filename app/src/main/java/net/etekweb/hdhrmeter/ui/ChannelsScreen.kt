@@ -214,7 +214,6 @@ private fun ChannelSearchTopBar(
 fun ChannelsScreen(
     state: UiState,
     device: HdhrDevice,
-    onBack: () -> Unit,
     onRefresh: () -> Unit,
     onQuery: (String) -> Unit,
     onFilter: (ChannelFilter) -> Unit,
@@ -224,6 +223,8 @@ fun ChannelsScreen(
     onCloseTuners: () -> Unit,
     onRefreshTuners: () -> Unit,
     onClearTuner: (Int) -> Unit,
+    onToggleFavorite: (Channel) -> Unit,
+    onDismissFavoriteError: () -> Unit,
 ) {
     val query = state.query.trim()
     val guide = state.guide
@@ -305,11 +306,6 @@ fun ChannelsScreen(
                                 color = Muted,
                                 fontFamily = FontFamily.Monospace,
                             )
-                        }
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                         }
                     },
                     actions = {
@@ -434,7 +430,10 @@ fun ChannelsScreen(
             onClear = onClearTuner,
         )
     }
-    scheduleChannel?.let { channel ->
+    scheduleChannel?.let { selected ->
+        val channel = state.channels.firstOrNull {
+            it.guideNumber == selected.guideNumber && it.streamUrl == selected.streamUrl
+        } ?: selected
         ChannelGuideDialog(
             channel = channel,
             programs = guide?.schedule(channel.guideNumber, channel.guideName, nowMs).orEmpty(),
@@ -442,9 +441,13 @@ fun ChannelsScreen(
             guideLoading = state.guideLoading,
             guideMissing = guide == null && state.guideError.isNullOrBlank() && !state.guideLoading,
             guideError = if (guide == null) state.guideError else null,
+            favoriteSaving = channel.guideNumber in state.favoritePending,
+            favoriteError = state.favoriteError?.takeIf { state.favoriteErrorGuide == channel.guideNumber },
+            onToggleFavorite = { onToggleFavorite(channel) },
             onClose = {
                 scheduleChannel = null
                 scheduleProgram = null
+                onDismissFavoriteError()
             },
             onOpenProgram = { scheduleProgram = it },
         )
@@ -728,6 +731,9 @@ private fun ChannelGuideDialog(
     guideLoading: Boolean,
     guideMissing: Boolean,
     guideError: String?,
+    favoriteSaving: Boolean,
+    favoriteError: String?,
+    onToggleFavorite: () -> Unit,
     onClose: () -> Unit,
     onOpenProgram: (GuideProgram) -> Unit,
 ) {
@@ -757,13 +763,34 @@ private fun ChannelGuideDialog(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text(
-                            channel.guideNumber,
-                            color = Amber,
-                            fontFamily = FontFamily.Monospace,
-                            style = MaterialTheme.typography.titleLarge,
-                            maxLines = 1,
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                channel.guideNumber,
+                                color = Amber,
+                                fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.titleLarge,
+                                maxLines = 1,
+                            )
+                            IconButton(
+                                onClick = onToggleFavorite,
+                                enabled = !favoriteSaving,
+                                modifier = Modifier.alpha(if (favoriteSaving) 0.45f else 1f),
+                            ) {
+                                if (channel.favorite) {
+                                    Icon(
+                                        Icons.Filled.Star,
+                                        contentDescription = "Remove from favorites",
+                                        tint = Amber,
+                                    )
+                                } else {
+                                    Icon(
+                                        painterResource(R.drawable.ic_star_border),
+                                        contentDescription = "Add to favorites",
+                                        tint = Paper,
+                                    )
+                                }
+                            }
+                        }
                         Text(
                             channel.guideName,
                             color = Paper,
@@ -775,6 +802,14 @@ private fun ChannelGuideDialog(
                     IconButton(onClick = onClose) {
                         Icon(Icons.Filled.Close, contentDescription = "Close guide", tint = Paper)
                     }
+                }
+                if (!favoriteError.isNullOrBlank()) {
+                    Text(
+                        favoriteError,
+                        color = Bad,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 20.dp),
+                    )
                 }
                 if (guideLoading) {
                     LinearProgressIndicator(

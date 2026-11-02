@@ -12,11 +12,16 @@ import net.etekweb.hdhrmeter.data.previewHop
 import net.etekweb.hdhrmeter.data.GuideIndex
 import net.etekweb.hdhrmeter.data.HdhrClient
 import net.etekweb.hdhrmeter.data.HdhrDevice
+import net.etekweb.hdhrmeter.data.favoritePostUrl
 import net.etekweb.hdhrmeter.data.SignalReading
 import net.etekweb.hdhrmeter.data.rememberViewedChannel
-import net.etekweb.hdhrmeter.data.guideUrlForInput
-import net.etekweb.hdhrmeter.data.hostOf
+import net.etekweb.hdhrmeter.data.GUIDE_URL_HINT
+import net.etekweb.hdhrmeter.data.GuideMode
 import net.etekweb.hdhrmeter.data.isIdle
+import net.etekweb.hdhrmeter.data.hdhrGuideKey
+import net.etekweb.hdhrmeter.data.normalizeGuideUrl
+import net.etekweb.hdhrmeter.data.rememberTuner
+import net.etekweb.hdhrmeter.data.sameTuner
 import net.etekweb.hdhrmeter.data.mergeSignal
 import net.etekweb.hdhrmeter.data.rewriteStreamUrl
 import net.etekweb.hdhrmeter.data.selectTuner
@@ -54,9 +59,13 @@ internal fun overlayTabFromStored(raw: String?): OverlayTab {
 
 enum class PlaybackPhase { Idle, Tuning, Buffering, Ready }
 
+enum class AppTab { Lineup, Dvr, Settings }
+
+/** Whether the selected tuner answered. [Missing] sends Lineup and DVR to Settings. */
+enum class TunerReach { Checking, Ready, Missing }
+
 sealed interface Screen {
-    data object Devices : Screen
-    data class Channels(val device: HdhrDevice) : Screen
+    data object Shell : Screen
     data class Watch(val device: HdhrDevice, val channel: Channel) : Screen
 }
 
@@ -79,17 +88,27 @@ data class SignalPeaks(
 }
 
 data class UiState(
-    val screen: Screen = Screen.Devices,
+    val screen: Screen = Screen.Shell,
+    val tab: AppTab = AppTab.Lineup,
     val devices: List<HdhrDevice> = emptyList(),
-    val recent: HdhrDevice? = null,
+    val savedTuners: List<HdhrDevice> = emptyList(),
+    val selectedDevice: HdhrDevice? = null,
+    val tunerReach: TunerReach = TunerReach.Missing,
     val scanning: Boolean = false,
     val connecting: Boolean = false,
     val scanError: String? = null,
+    val tunerAddError: String? = null,
     val manualHost: String = "",
-    val guideHost: String = "",
-    /** Address last written by Save. This is the field text, not the loaded host label. */
-    val savedGuideHost: String = "",
-    val appliedGuideHost: String = "",
+    val guideSources: List<String> = emptyList(),
+    val guideMode: GuideMode = GuideMode.None,
+    val activeGuideUrl: String = "",
+    val guideDraft: String = "",
+    val guideDraftError: String? = null,
+    /**
+     * Identity of the guide held in [guide]. A URL in URL mode, or [hdhrGuideKey]
+     * while the HDHomeRun guide for that tuner is showing. Empty while a different guide is loading.
+     */
+    val appliedGuideUrl: String = "",
     val guide: GuideIndex? = null,
     val guideNowMs: Long = System.currentTimeMillis(),
     val guideLoading: Boolean = false,
@@ -97,6 +116,10 @@ data class UiState(
     val channels: List<Channel> = emptyList(),
     val channelsLoading: Boolean = false,
     val channelsError: String? = null,
+    /** Guide numbers whose favorite write is still in flight. */
+    val favoritePending: Set<String> = emptySet(),
+    val favoriteError: String? = null,
+    val favoriteErrorGuide: String? = null,
     val query: String = "",
     val filter: ChannelFilter = ChannelFilter.All,
     val recentChannels: List<String> = emptyList(),
@@ -118,6 +141,9 @@ data class UiState(
     val tuners: TunerPanel = TunerPanel(),
 )
 
+/** A favorite write the next lineup read must not undo if that read started first. */
+private data class FavoriteEdit(val favorite: Boolean, val lineupGeneration: Int)
+
 /** Guide-page list of the open device's tuners. */
 data class TunerPanel(
     val open: Boolean = false,
@@ -133,12 +159,15 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private val engine = PlaybackEngine(app)
 
     private val _ui = MutableStateFlow(
-        store.loadGuideHost().let { savedGuide ->
+        store.loadGuideLibrary().let { guides ->
+            val recent = store.loadRecent()
             UiState(
-                manualHost = store.loadHost(),
-                guideHost = savedGuide,
-                savedGuideHost = savedGuide,
-                recent = store.loadRecent(),
+                guideSources = guides.sources,
+                guideMode = guides.mode,
+                activeGuideUrl = guides.activeUrl,
+                savedTuners = store.loadSavedTuners(),
+                selectedDevice = recent,
+                tunerReach = if (recent == null) TunerReach.Missing else TunerReach.Checking,
                 overlayTab = overlayTabFromStored(store.loadOverlayTab()),
             )
         },
@@ -157,6 +186,12 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private var playGeneration = 0
     private var hopGeneration = 0
     private var tunerGeneration = 0
+    private var probeGeneration = 0
+    private var lineupGeneration = 0
+    /** Desired favorite flags that a lineup read started before the write must not undo. */
+    private val favoriteEdits = LinkedHashMap<String, FavoriteEdit>()
+    private var initialScanSettled = false
+    private var startupProbeFailed = false
     private var preferredTuner: Int? = null
     private var localIp: String? = null
     private var usingSpecificTuner = false
@@ -190,8 +225,18 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
-        if (_ui.value.guideHost.isNotBlank()) refreshGuide()
+        when (_ui.value.guideMode) {
+            GuideMode.Url -> if (_ui.value.activeGuideUrl.isNotBlank()) refreshGuide()
+            GuideMode.HdHomeRun -> refreshGuide()
+            GuideMode.None -> Unit
+        }
+        _ui.value.selectedDevice?.let { beginProbe(it, userInitiated = false) }
         scan()
+    }
+
+    fun selectTab(tab: AppTab) {
+        if (_ui.value.screen is Screen.Watch) return
+        _ui.update { state -> if (state.tab == tab) state else state.copy(tab = tab) }
     }
 
     fun scan() {
@@ -199,118 +244,235 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         scanJob = viewModelScope.launch {
             _ui.update { it.copy(scanning = true, scanError = null) }
             val result = withContext(Dispatchers.IO) { runCatching { client.discover() } }
+            if (!isActive) return@launch
+            val first = !initialScanSettled
+            initialScanSettled = true
             result.onSuccess { devices ->
                 _ui.update {
                     it.copy(
                         scanning = false,
                         devices = devices,
-                        scanError = if (devices.isEmpty()) {
-                            "No HDHomeRun answered. Enter the tuner IP address."
+                        scanError = if (devices.isEmpty() && it.savedTuners.isEmpty() && it.selectedDevice == null) {
+                            "No HDHomeRun answered. Add the tuner address below."
                         } else {
                             null
                         },
                     )
                 }
+                if (first) reconcileStartup(devices) else refreshSelectedFromScan(devices)
             }.onFailure { error ->
                 _ui.update {
                     it.copy(scanning = false, scanError = error.message ?: "Discovery failed.")
                 }
+                if (first) reconcileStartup(_ui.value.devices)
             }
         }
     }
 
     fun setManualHost(value: String) {
-        _ui.update { it.copy(manualHost = value) }
+        _ui.update { it.copy(manualHost = value, tunerAddError = null) }
     }
 
-    fun setGuideHost(value: String) {
-        _ui.update { it.copy(guideHost = value) }
+    fun setGuideDraft(value: String) {
+        _ui.update { it.copy(guideDraft = value, guideDraftError = null) }
     }
 
-    fun saveGuide() {
-        val raw = _ui.value.guideHost.trim()
-        if (raw.isEmpty()) {
-            guideGeneration++
-            guideJob?.cancel()
-            guideClockJob?.cancel()
-            store.saveGuideHost("")
-            _ui.update {
-                it.copy(
-                    guideHost = "",
-                    savedGuideHost = "",
-                    appliedGuideHost = "",
-                    guide = null,
-                    guideLoading = false,
-                    guideError = null,
-                )
-            }
+    fun addGuideSource() {
+        val url = normalizeGuideUrl(_ui.value.guideDraft)
+        if (url == null) {
+            _ui.update { it.copy(guideDraftError = GUIDE_URL_HINT) }
             return
         }
-        if (guideUrlForInput(raw) == null) {
-            _ui.update { it.copy(guideError = "Enter an IP address or hostname.") }
-            return
+        val sources = (_ui.value.guideSources + url).distinct()
+        store.saveGuideLibrary(sources, url, GuideMode.Url)
+        _ui.update {
+            it.copy(
+                guideSources = sources,
+                guideMode = GuideMode.Url,
+                activeGuideUrl = url,
+                guideDraft = "",
+                guideDraftError = null,
+                guideError = null,
+            )
         }
-        store.saveGuideHost(raw)
-        _ui.update { it.copy(guideHost = raw, savedGuideHost = raw, guideError = null) }
         refreshGuide()
     }
 
-    fun connectManual() {
-        val host = _ui.value.manualHost
+    fun selectGuideNone() {
+        val state = _ui.value
+        if (state.guideMode == GuideMode.None && state.guide == null && !state.guideLoading && state.guideError == null) {
+            return
+        }
+        store.saveGuideLibrary(state.guideSources, "", GuideMode.None)
+        guideGeneration++
+        guideJob?.cancel()
+        guideClockJob?.cancel()
+        _ui.update {
+            it.copy(
+                guideMode = GuideMode.None,
+                activeGuideUrl = "",
+                guide = null,
+                appliedGuideUrl = "",
+                guideError = null,
+                guideLoading = false,
+            )
+        }
+    }
+
+    fun selectGuideHdHomeRun() {
+        val state = _ui.value
+        val readyId = state.selectedDevice
+            ?.takeIf { state.tunerReach == TunerReach.Ready }
+            ?.deviceId
+        val loaded = readyId != null &&
+            state.appliedGuideUrl == hdhrGuideKey(readyId) &&
+            state.guide != null
+        if (state.guideMode == GuideMode.HdHomeRun && (state.guideLoading || loaded)) return
+        store.saveGuideLibrary(state.guideSources, "", GuideMode.HdHomeRun)
+        _ui.update {
+            it.copy(guideMode = GuideMode.HdHomeRun, activeGuideUrl = "", guideError = null)
+        }
+        refreshGuide()
+    }
+
+    fun selectGuideSource(url: String) {
+        val normalized = normalizeGuideUrl(url) ?: return
+        val state = _ui.value
+        if (normalized !in state.guideSources) return
+        if (
+            state.guideMode == GuideMode.Url &&
+            normalized == state.activeGuideUrl &&
+            (state.guide != null || state.guideLoading)
+        ) {
+            return
+        }
+        store.saveGuideLibrary(state.guideSources, normalized, GuideMode.Url)
+        _ui.update {
+            it.copy(guideMode = GuideMode.Url, activeGuideUrl = normalized, guideError = null)
+        }
+        refreshGuide()
+    }
+
+    fun removeGuideSource(url: String) {
+        val current = _ui.value
+        val sources = current.guideSources.filterNot { it == url }
+        val removingActiveUrl = current.guideMode == GuideMode.Url && current.activeGuideUrl == url
+        val nextUrl = when {
+            current.guideMode != GuideMode.Url -> ""
+            removingActiveUrl -> sources.firstOrNull().orEmpty()
+            else -> current.activeGuideUrl
+        }
+        val mode = when {
+            current.guideMode != GuideMode.Url -> current.guideMode
+            nextUrl.isEmpty() -> GuideMode.None
+            else -> GuideMode.Url
+        }
+        store.saveGuideLibrary(sources, nextUrl, mode)
+        val dropGuide = current.guideMode == GuideMode.Url && (removingActiveUrl || mode == GuideMode.None)
+        if (dropGuide) {
+            guideGeneration++
+            guideJob?.cancel()
+            if (mode != GuideMode.Url) guideClockJob?.cancel()
+        }
+        _ui.update {
+            it.copy(
+                guideSources = sources,
+                guideMode = mode,
+                activeGuideUrl = if (mode == GuideMode.Url) nextUrl else "",
+                guide = if (dropGuide) null else it.guide,
+                appliedGuideUrl = if (dropGuide) "" else it.appliedGuideUrl,
+                guideError = if (dropGuide) null else it.guideError,
+                guideLoading = if (dropGuide) false else it.guideLoading,
+            )
+        }
+        if (dropGuide && mode == GuideMode.Url) refreshGuide()
+    }
+
+    fun addDevice() {
+        val host = _ui.value.manualHost.trim()
+        if (host.isEmpty() || _ui.value.connecting) return
         viewModelScope.launch {
-            _ui.update { it.copy(connecting = true, scanError = null) }
+            _ui.update { it.copy(connecting = true, tunerAddError = null) }
             val result = withContext(Dispatchers.IO) { runCatching { client.deviceForHost(host) } }
             result.onSuccess { device ->
-                store.saveHost(host.trim())
-                store.saveRecent(device)
-                _ui.update { state ->
-                    val rest = state.devices.filter { it.deviceId != device.deviceId }
-                    state.copy(
-                        connecting = false,
-                        devices = listOf(device) + rest,
-                        recent = device,
-                    )
-                }
-                open(device)
+                _ui.update { it.copy(connecting = false, manualHost = "") }
+                adoptTuner(device, fromUser = true)
             }.onFailure { error ->
                 _ui.update {
-                    it.copy(connecting = false, scanError = error.message ?: "Could not reach that address.")
+                    it.copy(
+                        connecting = false,
+                        tunerAddError = error.message ?: "Could not reach that address.",
+                    )
                 }
             }
         }
     }
 
-    fun open(device: HdhrDevice) {
-        store.saveRecent(device)
+    fun selectDevice(device: HdhrDevice) {
+        val live = _ui.value.devices.firstOrNull { sameTuner(it, device) }
+        val already = _ui.value.tunerReach == TunerReach.Ready &&
+            _ui.value.selectedDevice?.let { sameTuner(it, live ?: device) } == true
+        if (already) {
+            _ui.update { it.copy(tab = AppTab.Lineup) }
+            return
+        }
+        if (live != null) {
+            adoptTuner(live, fromUser = true)
+        } else {
+            beginProbe(device, userInitiated = true)
+        }
+    }
+
+    fun removeSavedDevice(device: HdhrDevice) {
+        val saved = store.loadSavedTuners().filterNot { sameTuner(it, device) }
+        store.saveSavedTuners(saved)
+        val onNetwork = _ui.value.devices.any { sameTuner(it, device) }
+        val selected = _ui.value.selectedDevice
+        val dropSelection = selected != null && sameTuner(selected, device) && !onNetwork
+        if (!dropSelection) {
+            _ui.update { it.copy(savedTuners = saved) }
+            return
+        }
+        probeGeneration++
+        lineupGeneration++
+        dismissTuners()
+        store.clearRecent()
         _ui.update {
             it.copy(
-                screen = Screen.Channels(device),
-                recent = device,
+                savedTuners = saved,
+                selectedDevice = null,
+                tunerReach = TunerReach.Missing,
                 channels = emptyList(),
-                channelsLoading = true,
+                channelsLoading = false,
                 channelsError = null,
-                query = "",
-                recentChannels = store.loadRecentChannels(device.deviceId),
                 returnToChannel = null,
+                favoritePending = emptySet(),
+                favoriteError = null,
+                favoriteErrorGuide = null,
             )
         }
-        loadLineup(device, keepExisting = false)
+        forgetFavoriteEdits()
+        reloadGuideForTuner()
     }
 
     fun refreshLineup() {
-        val device = (_ui.value.screen as? Screen.Channels)?.device ?: return
+        val device = readyDevice() ?: return
         loadLineup(device, keepExisting = true)
-        if (store.loadGuideHost().isNotBlank()) refreshGuide()
+        when (_ui.value.guideMode) {
+            GuideMode.Url -> if (_ui.value.activeGuideUrl.isNotBlank()) refreshGuide()
+            GuideMode.HdHomeRun -> refreshGuide()
+            GuideMode.None -> Unit
+        }
     }
 
     fun openTuners() {
-        val device = (_ui.value.screen as? Screen.Channels)?.device ?: return
+        val device = readyDevice() ?: return
         _ui.update { it.copy(tuners = TunerPanel(open = true, loading = true)) }
         reloadTuners(device)
     }
 
     fun refreshTuners() {
-        val device = (_ui.value.screen as? Screen.Channels)?.device ?: return
+        val device = readyDevice() ?: return
         val panel = _ui.value.tuners
         if (!panel.open || panel.loading || panel.clearing != null) return
         reloadTuners(device)
@@ -361,7 +523,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun forceClearTuner(index: Int) {
-        val device = (_ui.value.screen as? Screen.Channels)?.device ?: return
+        val device = readyDevice() ?: return
         val panel = _ui.value.tuners
         if (!panel.open || panel.clearing != null || index < 0) return
         tunerJob?.cancel()
@@ -406,6 +568,82 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         _ui.update { it.copy(filter = filter, returnToChannel = null) }
     }
 
+    /**
+     * Adds or removes this channel on the tuner's favorite list.
+     * The tuner keeps the flag, so other devices pick it up from the lineup.
+     */
+    fun toggleFavorite(channel: Channel) {
+        val device = readyDevice() ?: return
+        val number = channel.guideNumber
+        if (number in _ui.value.favoritePending) return
+        val next = !channel.favorite
+        if (favoritePostUrl(device.baseUrl, number, next) == null) {
+            _ui.update {
+                it.copy(
+                    favoriteError = "That channel cannot be marked as a favorite.",
+                    favoriteErrorGuide = number,
+                )
+            }
+            return
+        }
+        favoriteEdits[number] = FavoriteEdit(next, lineupGeneration)
+        _ui.update {
+            it.copy(
+                channels = applyFavoriteEdits(it.channels, lineupGeneration),
+                favoritePending = it.favoritePending + number,
+                favoriteError = null,
+                favoriteErrorGuide = null,
+            )
+        }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { client.setChannelFavorite(device, number, next) }
+            }
+            val current = favoriteEdits[number]
+            if (current == null || current.favorite != next) {
+                _ui.update { state ->
+                    state.copy(favoritePending = state.favoritePending - number)
+                }
+                return@launch
+            }
+            if (result.isSuccess) {
+                favoriteEdits[number] = FavoriteEdit(next, lineupGeneration)
+            } else {
+                favoriteEdits.remove(number)
+            }
+            _ui.update { state ->
+                val here = state.tunerReach == TunerReach.Ready &&
+                    state.selectedDevice?.let { sameTuner(it, device) } == true
+                if (!here) {
+                    state.copy(favoritePending = state.favoritePending - number)
+                } else if (result.isSuccess) {
+                    state.copy(
+                        channels = state.channels.map { item ->
+                            if (item.guideNumber == number) item.copy(favorite = next) else item
+                        }.let { applyFavoriteEdits(it, lineupGeneration) },
+                        favoritePending = state.favoritePending - number,
+                    )
+                } else {
+                    state.copy(
+                        channels = state.channels.map { item ->
+                            if (item.guideNumber == number) item.copy(favorite = !next) else item
+                        }.let { applyFavoriteEdits(it, lineupGeneration) },
+                        favoritePending = state.favoritePending - number,
+                        favoriteError = result.exceptionOrNull()?.message ?: "Could not update favorites.",
+                        favoriteErrorGuide = number,
+                    )
+                }
+            }
+        }
+    }
+
+    fun dismissFavoriteError() {
+        _ui.update { state ->
+            if (state.favoriteError == null && state.favoriteErrorGuide == null) state
+            else state.copy(favoriteError = null, favoriteErrorGuide = null)
+        }
+    }
+
     fun consumeReturnChannel() {
         _ui.update { state ->
             if (state.returnToChannel == null) state else state.copy(returnToChannel = null)
@@ -415,8 +653,10 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     fun watch(channel: Channel) {
         val device = when (val screen = _ui.value.screen) {
             is Screen.Watch -> screen.device
-            is Screen.Channels -> screen.device
-            Screen.Devices -> return
+            Screen.Shell -> {
+                if (_ui.value.tunerReach != TunerReach.Ready) return
+                _ui.value.selectedDevice ?: return
+            }
         }
         if (channel.drm) {
             _ui.update {
@@ -514,31 +754,24 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun onBack() {
-        when (val screen = _ui.value.screen) {
-            is Screen.Watch -> {
-                cancelChannelHop()
-                _ui.update {
-                    it.copy(
-                        screen = Screen.Channels(screen.device),
-                        playbackError = null,
-                        signal = null,
-                        signalNote = null,
-                        tunerReleased = false,
-                        offerTranscode = false,
-                        pendingChannel = null,
-                        returnToChannel = screen.channel,
-                    )
-                }
-                // The guide is already showing. Stopping the stream can block
-                // while the tuner socket closes, so it runs off the UI thread.
-                stopPlayback()
-            }
-            is Screen.Channels -> {
-                dismissTuners()
-                _ui.update { it.copy(screen = Screen.Devices, channelsError = null, tuners = TunerPanel()) }
-            }
-            Screen.Devices -> Unit
+        val screen = _ui.value.screen as? Screen.Watch ?: return
+        cancelChannelHop()
+        _ui.update {
+            it.copy(
+                screen = Screen.Shell,
+                tab = AppTab.Lineup,
+                playbackError = null,
+                signal = null,
+                signalNote = null,
+                tunerReleased = false,
+                offerTranscode = false,
+                pendingChannel = null,
+                returnToChannel = screen.channel,
+            )
         }
+        // The guide is already showing. Stopping the stream can block
+        // while the tuner socket closes, so it runs off the UI thread.
+        stopPlayback()
     }
 
     fun onHostStop() {
@@ -570,38 +803,154 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         tunerJob?.cancel()
     }
 
+    private fun reloadGuideForTuner() {
+        if (_ui.value.guideMode == GuideMode.HdHomeRun) refreshGuide()
+    }
+
     private fun refreshGuide() {
-        val raw = store.loadGuideHost()
-        val url = guideUrlForInput(raw) ?: return
-        val label = hostOf(url).orEmpty()
+        when (_ui.value.guideMode) {
+            GuideMode.None -> Unit
+            GuideMode.Url -> refreshUrlGuide(_ui.value.activeGuideUrl)
+            GuideMode.HdHomeRun -> refreshHdhrGuide()
+        }
+    }
+
+    private fun refreshUrlGuide(rawUrl: String) {
+        val url = normalizeGuideUrl(rawUrl) ?: return
         val generation = ++guideGeneration
         guideJob?.cancel()
         guideJob = viewModelScope.launch {
             _ui.update { state ->
-                val same = state.appliedGuideHost == label && state.guide != null
+                if (state.guideMode != GuideMode.Url) return@update state
+                val same = state.appliedGuideUrl == url && state.guide != null
                 state.copy(
                     guideLoading = true,
                     guideError = null,
                     guide = if (same) state.guide else null,
-                    appliedGuideHost = if (same) state.appliedGuideHost else "",
+                    appliedGuideUrl = if (same) state.appliedGuideUrl else "",
                 )
             }
             val result = withContext(Dispatchers.IO) { runCatching { client.loadGuide(url) } }
             if (generation != guideGeneration) return@launch
             result.onSuccess { index ->
                 _ui.update {
-                    it.copy(
-                        guideLoading = false,
-                        guide = index,
-                        guideNowMs = System.currentTimeMillis(),
-                        guideError = null,
-                        appliedGuideHost = label,
-                    )
+                    val still = it.guideMode == GuideMode.Url && normalizeGuideUrl(it.activeGuideUrl) == url
+                    if (!still) {
+                        it
+                    } else {
+                        it.copy(
+                            guideLoading = false,
+                            guide = index,
+                            guideNowMs = System.currentTimeMillis(),
+                            guideError = null,
+                            appliedGuideUrl = url,
+                        )
+                    }
                 }
-                startGuideClock()
+                if (generation == guideGeneration && _ui.value.appliedGuideUrl == url && _ui.value.guide != null) {
+                    startGuideClock()
+                }
             }.onFailure { error ->
                 _ui.update {
-                    it.copy(
+                    if (it.guideMode != GuideMode.Url) it
+                    else it.copy(
+                        guideLoading = false,
+                        guideError = error.message ?: "Could not load the guide.",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun refreshHdhrGuide() {
+        val state = _ui.value
+        val device = state.selectedDevice
+        when {
+            device == null -> showHdhrUnavailable("No tuner selected.")
+            state.tunerReach == TunerReach.Ready -> loadHdhrGuide(device)
+            state.tunerReach == TunerReach.Checking -> showHdhrWaiting(device)
+            device.host.isBlank() -> showHdhrUnavailable("No tuner selected.")
+            else -> showHdhrUnavailable("No tuner found at ${device.host}.")
+        }
+    }
+
+    private fun showHdhrUnavailable(message: String) {
+        guideGeneration++
+        guideJob?.cancel()
+        guideClockJob?.cancel()
+        _ui.update { state ->
+            if (state.guideMode != GuideMode.HdHomeRun) state
+            else state.copy(
+                guideLoading = false,
+                guide = null,
+                appliedGuideUrl = "",
+                guideError = message,
+            )
+        }
+    }
+
+    private fun showHdhrWaiting(device: HdhrDevice) {
+        guideGeneration++
+        guideJob?.cancel()
+        val key = hdhrGuideKey(device.deviceId)
+        val keep = _ui.value.guideMode == GuideMode.HdHomeRun &&
+            _ui.value.appliedGuideUrl == key &&
+            _ui.value.guide != null
+        if (!keep) guideClockJob?.cancel()
+        _ui.update { state ->
+            if (state.guideMode != GuideMode.HdHomeRun) return@update state
+            state.copy(
+                guideLoading = true,
+                guideError = null,
+                guide = if (keep) state.guide else null,
+                appliedGuideUrl = if (keep) state.appliedGuideUrl else "",
+            )
+        }
+    }
+
+    private fun loadHdhrGuide(device: HdhrDevice) {
+        val key = hdhrGuideKey(device.deviceId)
+        val generation = ++guideGeneration
+        guideJob?.cancel()
+        guideJob = viewModelScope.launch {
+            _ui.update { state ->
+                if (state.guideMode != GuideMode.HdHomeRun) return@update state
+                val same = state.appliedGuideUrl == key && state.guide != null
+                state.copy(
+                    guideLoading = true,
+                    guideError = null,
+                    guide = if (same) state.guide else null,
+                    appliedGuideUrl = if (same) state.appliedGuideUrl else "",
+                )
+            }
+            val result = withContext(Dispatchers.IO) { runCatching { client.loadHdhrGuide(device) } }
+            if (generation != guideGeneration) return@launch
+            result.onSuccess { index ->
+                _ui.update {
+                    val current = it.selectedDevice
+                    val still = it.guideMode == GuideMode.HdHomeRun &&
+                        it.tunerReach == TunerReach.Ready &&
+                        current != null &&
+                        sameTuner(current, device)
+                    if (!still) {
+                        it
+                    } else {
+                        it.copy(
+                            guideLoading = false,
+                            guide = index,
+                            guideNowMs = System.currentTimeMillis(),
+                            guideError = null,
+                            appliedGuideUrl = key,
+                        )
+                    }
+                }
+                if (generation == guideGeneration && _ui.value.appliedGuideUrl == key && _ui.value.guide != null) {
+                    startGuideClock()
+                }
+            }.onFailure { error ->
+                _ui.update {
+                    if (it.guideMode != GuideMode.HdHomeRun) it
+                    else it.copy(
                         guideLoading = false,
                         guideError = error.message ?: "Could not load the guide.",
                     )
@@ -631,18 +980,175 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun readyDevice(): HdhrDevice? {
+        if (_ui.value.screen is Screen.Watch) return null
+        if (_ui.value.tunerReach != TunerReach.Ready) return null
+        return _ui.value.selectedDevice
+    }
+
+    private fun beginProbe(device: HdhrDevice, userInitiated: Boolean) {
+        val generation = ++probeGeneration
+        if (userInitiated) {
+            val saved = rememberTuner(store.loadSavedTuners(), device)
+            store.saveSavedTuners(saved)
+            store.saveRecent(device)
+            dismissTuners()
+            _ui.update {
+                it.copy(
+                    savedTuners = saved,
+                    selectedDevice = device,
+                    tunerReach = TunerReach.Checking,
+                    tab = AppTab.Lineup,
+                    channels = emptyList(),
+                    channelsLoading = false,
+                    channelsError = null,
+                    query = "",
+                    returnToChannel = null,
+                    tunerAddError = null,
+                    recentChannels = store.loadRecentChannels(device.deviceId),
+                    favoritePending = emptySet(),
+                    favoriteError = null,
+                    favoriteErrorGuide = null,
+                )
+            }
+            forgetFavoriteEdits()
+            reloadGuideForTuner()
+        }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { client.deviceForHost(device.host) } }
+            if (generation != probeGeneration) return@launch
+            result.onSuccess { live ->
+                adoptTuner(live, fromUser = false)
+            }.onFailure {
+                if (!userInitiated) startupProbeFailed = true
+                if (userInitiated || initialScanSettled) {
+                    val found = _ui.value.devices.firstOrNull { sameTuner(it, device) }
+                    if (found != null) {
+                        adoptTuner(found, fromUser = false)
+                    } else {
+                        markTunerMissing(device)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun adoptTuner(device: HdhrDevice, fromUser: Boolean) {
+        if (fromUser) probeGeneration++
+        val previous = _ui.value.selectedDevice
+        val same = _ui.value.tunerReach == TunerReach.Ready &&
+            previous != null &&
+            sameTuner(previous, device)
+        val saved = rememberTuner(store.loadSavedTuners(), device)
+        store.saveSavedTuners(saved)
+        store.saveRecent(device)
+        if (same) {
+            _ui.update {
+                it.copy(
+                    selectedDevice = device,
+                    savedTuners = saved,
+                    tab = if (fromUser) AppTab.Lineup else it.tab,
+                    tunerAddError = null,
+                )
+            }
+            return
+        }
+        dismissTuners()
+        _ui.update {
+            it.copy(
+                selectedDevice = device,
+                savedTuners = saved,
+                tunerReach = TunerReach.Ready,
+                tab = if (fromUser) AppTab.Lineup else it.tab,
+                channels = emptyList(),
+                channelsLoading = true,
+                channelsError = null,
+                query = "",
+                returnToChannel = null,
+                recentChannels = store.loadRecentChannels(device.deviceId),
+                tunerAddError = null,
+                favoritePending = emptySet(),
+                favoriteError = null,
+                favoriteErrorGuide = null,
+            )
+        }
+        forgetFavoriteEdits()
+        loadLineup(device, keepExisting = false)
+        reloadGuideForTuner()
+    }
+
+    private fun reconcileStartup(discovered: List<HdhrDevice>) {
+        val state = _ui.value
+        val selected = state.selectedDevice ?: return
+        if (state.tunerReach == TunerReach.Ready) return
+        val found = discovered.firstOrNull { sameTuner(it, selected) }
+        if (found != null) {
+            probeGeneration++
+            adoptTuner(found, fromUser = false)
+        } else if (startupProbeFailed && state.tunerReach == TunerReach.Checking) {
+            markTunerMissing(selected)
+        }
+    }
+
+    private fun markTunerMissing(device: HdhrDevice) {
+        _ui.update { state ->
+            if (state.selectedDevice?.let { sameTuner(it, device) } != true) state
+            else state.copy(tunerReach = TunerReach.Missing, channelsLoading = false)
+        }
+        val selected = _ui.value.selectedDevice
+        if (selected != null && sameTuner(selected, device) && _ui.value.tunerReach == TunerReach.Missing) {
+            reloadGuideForTuner()
+        }
+    }
+
+    private fun refreshSelectedFromScan(discovered: List<HdhrDevice>) {
+        val selected = _ui.value.selectedDevice ?: return
+        if (_ui.value.tunerReach != TunerReach.Ready) return
+        val found = discovered.firstOrNull { sameTuner(it, selected) } ?: return
+        val saved = rememberTuner(store.loadSavedTuners(), found)
+        store.saveSavedTuners(saved)
+        store.saveRecent(found)
+        _ui.update { it.copy(selectedDevice = found, savedTuners = saved) }
+    }
+
+    private fun forgetFavoriteEdits() {
+        favoriteEdits.clear()
+    }
+
+    private fun applyFavoriteEdits(channels: List<Channel>, fetchGeneration: Int): List<Channel> {
+        if (favoriteEdits.isEmpty()) return channels
+        val drop = ArrayList<String>()
+        val updated = channels.map { channel ->
+            val edit = favoriteEdits[channel.guideNumber] ?: return@map channel
+            if (fetchGeneration > edit.lineupGeneration) {
+                drop += channel.guideNumber
+                channel
+            } else if (channel.favorite == edit.favorite) {
+                channel
+            } else {
+                channel.copy(favorite = edit.favorite)
+            }
+        }
+        for (number in drop) favoriteEdits.remove(number)
+        return updated
+    }
+
     private fun loadLineup(device: HdhrDevice, keepExisting: Boolean) {
+        val generation = ++lineupGeneration
         viewModelScope.launch {
             _ui.update { it.copy(channelsLoading = true, channelsError = null) }
             val result = withContext(Dispatchers.IO) { runCatching { client.lineup(device) } }
-            val stillHere = (_ui.value.screen as? Screen.Channels)?.device?.deviceId == device.deviceId
+            if (generation != lineupGeneration) return@launch
+            val stillHere = _ui.value.tunerReach == TunerReach.Ready &&
+                _ui.value.selectedDevice?.let { sameTuner(it, device) } == true
             if (!stillHere) return@launch
             result.onSuccess { channels ->
                 _ui.update {
+                    val shown = applyFavoriteEdits(channels, generation)
                     it.copy(
                         channelsLoading = false,
-                        channels = channels,
-                        channelsError = if (channels.isEmpty()) {
+                        channels = shown,
+                        channelsError = if (shown.isEmpty()) {
                             "No channels yet. Run a channel scan in the HDHomeRun app, then refresh."
                         } else {
                             null
