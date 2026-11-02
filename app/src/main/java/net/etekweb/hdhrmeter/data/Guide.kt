@@ -135,6 +135,7 @@ internal const val GUIDE_URL_HINT =
 /**
  * Restores the guide choice. A stored mode wins. Older installs have no mode:
  * a saved XML URL stays selected, and a cleared guide is [GuideMode.None].
+ * A new install has no guide keys; [DeviceStore] starts that case on [GuideMode.HdHomeRun].
  */
 internal fun resolveGuideLibrary(
     storedMode: String?,

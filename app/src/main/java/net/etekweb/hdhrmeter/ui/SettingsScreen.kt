@@ -101,6 +101,43 @@ fun SettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 item {
+                    Text("Tuners", style = MaterialTheme.typography.titleMedium, color = Paper)
+                    Text(
+                        "Tuners on the network, plus any you add. Choose one for the lineup.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Muted,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+                if (state.scanError != null) {
+                    item {
+                        Text(state.scanError, color = Bad, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                items(tuners, key = { "${it.deviceId}|${it.host}" }) { device ->
+                    val discovered = state.devices.any { sameTuner(it, device) }
+                    val saved = state.savedTuners.any { sameTuner(it, device) }
+                    val active = state.tunerReach == TunerReach.Ready &&
+                        state.selectedDevice?.let { sameTuner(it, device) } == true
+                    TunerChoiceRow(
+                        device = device,
+                        selected = state.selectedDevice?.let { sameTuner(it, device) } == true,
+                        onNetwork = discovered || active,
+                        onSelect = { onSelectDevice(device) },
+                        onRemove = if (saved && !discovered && !active) {
+                            { onRemoveDevice(device) }
+                        } else {
+                            null
+                        },
+                    )
+                }
+                item {
+                    TunerDraftField(state, onHostChange, onAddDevice)
+                }
+                item {
+                    HorizontalDivider(color = InkRaised, modifier = Modifier.padding(vertical = 6.dp))
+                }
+                item {
                     Text("Guide providers", style = MaterialTheme.typography.titleMedium, color = Paper)
                 }
                 item {
@@ -146,43 +183,6 @@ fun SettingsScreen(
                 }
                 item {
                     GuideDraftField(state, onGuideDraft, onAddGuide)
-                }
-                item {
-                    HorizontalDivider(color = InkRaised, modifier = Modifier.padding(vertical = 6.dp))
-                }
-                item {
-                    Text("Tuners", style = MaterialTheme.typography.titleMedium, color = Paper)
-                    Text(
-                        "Tuners on the network, plus any you add. Choose one for the lineup.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Muted,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                }
-                if (state.scanError != null) {
-                    item {
-                        Text(state.scanError, color = Bad, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-                items(tuners, key = { "${it.deviceId}|${it.host}" }) { device ->
-                    val discovered = state.devices.any { sameTuner(it, device) }
-                    val saved = state.savedTuners.any { sameTuner(it, device) }
-                    val active = state.tunerReach == TunerReach.Ready &&
-                        state.selectedDevice?.let { sameTuner(it, device) } == true
-                    TunerChoiceRow(
-                        device = device,
-                        selected = state.selectedDevice?.let { sameTuner(it, device) } == true,
-                        onNetwork = discovered || active,
-                        onSelect = { onSelectDevice(device) },
-                        onRemove = if (saved && !discovered && !active) {
-                            { onRemoveDevice(device) }
-                        } else {
-                            null
-                        },
-                    )
-                }
-                item {
-                    TunerDraftField(state, onHostChange, onAddDevice)
                 }
             }
         }
@@ -359,7 +359,10 @@ private fun GuideDraftField(
     onAdd: () -> Unit,
 ) {
     val draft = state.guideDraft.trim()
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.padding(bottom = 8.dp),
+    ) {
         OutlinedTextField(
             value = state.guideDraft,
             onValueChange = onDraft,
@@ -397,7 +400,7 @@ private fun TunerDraftField(
     onHostChange: (String) -> Unit,
     onAdd: () -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 8.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Tuner address", style = MaterialTheme.typography.labelLarge, color = Muted)
         OutlinedTextField(
             value = state.manualHost,

@@ -100,7 +100,7 @@ data class UiState(
     val tunerAddError: String? = null,
     val manualHost: String = "",
     val guideSources: List<String> = emptyList(),
-    val guideMode: GuideMode = GuideMode.None,
+    val guideMode: GuideMode = GuideMode.HdHomeRun,
     val activeGuideUrl: String = "",
     val guideDraft: String = "",
     val guideDraftError: String? = null,

@@ -20,15 +20,18 @@ class DeviceStore(context: Context) {
                 prefs.getString(KEY_GUIDE_ACTIVE, "").orEmpty(),
             )
         }
-        val migrated = migrateLegacyGuideHost(prefs.getString(KEY_GUIDE_HOST, "").orEmpty())
+        val legacyHost = prefs.getString(KEY_GUIDE_HOST, null)
+        // No guide keys at all: a new install starts on the HDHomeRun guide.
+        if (legacyHost == null) {
+            return resolveGuideLibrary(GUIDE_MODE_HDHOMERUN, "", "")
+        }
+        val migrated = migrateLegacyGuideHost(legacyHost)
         val library = resolveGuideLibrary(
             storedMode = if (migrated.isEmpty()) GUIDE_MODE_NONE else GUIDE_MODE_URL,
             storedSources = migrated.joinToString("\n"),
             storedActive = migrated.firstOrNull().orEmpty(),
         )
-        if (migrated.isNotEmpty() || prefs.contains(KEY_GUIDE_HOST)) {
-            saveGuideLibrary(library.sources, library.activeUrl, library.mode)
-        }
+        saveGuideLibrary(library.sources, library.activeUrl, library.mode)
         return library
     }
 
