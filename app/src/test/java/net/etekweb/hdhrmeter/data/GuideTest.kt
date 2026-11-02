@@ -4,6 +4,7 @@ import net.etekweb.hdhrmeter.ui.formatAirTime
 import net.etekweb.hdhrmeter.ui.formatClockTime
 import net.etekweb.hdhrmeter.ui.formatProgramDetail
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -162,10 +163,10 @@ class GuideTest {
         assertEquals("Later Show", index.airing("2.1", "WJBK", onTheHour)?.title)
         assertEquals("Law & Order", index.airing("2.1", "WJBK", parseXmltvTime("20261031010000 +0000")!!)?.title)
 
-        assertEquals("Law & Order", index.airing("9.9", "WJBKDT", during)?.title)
-        assertEquals("Subchannel", index.airing("9.9", "WJBK-DT2", during)?.title)
+        assertNull(index.airing("9.9", "WJBKDT", during))
+        assertNull(index.airing("9.9", "WJBK-DT2", during))
         assertNull(index.airing("9.9", "WJBK", during))
-        assertEquals("Law & Order", index.airing("9.9", "Fox Entertainment", during)?.title)
+        assertNull(index.airing("9.9", "Fox Entertainment", during))
         assertEquals("Movie Night", index.airing("9.9", "MOVIES!", during)?.title)
         val lengthOnly = index.airing("9.9", "MOVIES!", parseXmltvTime("20261031041500 +0000")!!)
         assertEquals("Length Only", lengthOnly?.title)
@@ -183,10 +184,31 @@ class GuideTest {
         )
         assertEquals(listOf("Later Show"), index.schedule("2.1", "WJBK", onTheHour).map { it.title })
         assertTrue(index.schedule("999.9", "NOTACHANNEL", during).isEmpty())
-        assertEquals("Later Show", index.upcoming("9.9", "WJBKDT", during)?.title)
+        assertNull(index.upcoming("9.9", "WJBKDT", during))
         assertNull(index.upcoming("2.1", "WJBK", onTheHour))
         assertNull(index.upcoming("2.2", "", during))
         assertNull(index.upcoming("999.9", "NOTACHANNEL", during))
+    }
+
+    @Test
+    fun missingSubchannelsStayBlankAndSharedNumbersFollowTheCallsign() {
+        val index = parseXmltv(sharedNumberFixture().byteInputStream())
+        val during = parseXmltvTime("20261031013000 +0000")!!
+
+        assertEquals("Counting Cars", index.airing("18.1", "WDWO-CD", during)?.title)
+        assertEquals("Cozi Show", index.airing("18.2", "WDWO-CD", during)?.title)
+        assertNull(index.airing("18.7", "WDWO-CD", during))
+        assertNull(index.airing("18.12", "WDWO-CD", during))
+        assertTrue(index.schedule("18.7", "WDWO-CD", during).isEmpty())
+        assertNull(index.airing("19.8", "WUDL-LD", during))
+
+        assertFalse(index.byNumber.containsKey("19.1"))
+        assertEquals("Local News", index.airing("19.1", "WUDL-LD", during)?.title)
+        assertEquals(listOf("Local News"), index.schedule("19.1", "WUDL-LD", during).map { it.title })
+        assertEquals("Canadian News", index.airing("19.1", "CICO-D32", during)?.title)
+        assertEquals(listOf("Canadian News"), index.schedule("19.1", "CICOD32", during).map { it.title })
+        assertNull(index.airing("19.1", "OTHER", during))
+        assertEquals("Sonlife", index.airing("19.2", "WUDL-LD", during)?.title)
     }
 
     @Test
@@ -240,6 +262,54 @@ class GuideTest {
         }
         assertNull(index.airing("999.9", "NOTACHANNEL", now))
     }
+
+    private fun sharedNumberFixture(): String = """
+        <tv>
+          <channel id="73228">
+            <display-name>18.1 WDWOCD</display-name>
+            <display-name>18.1</display-name>
+            <display-name>WDWOCD</display-name>
+            <display-name>DEFY TV</display-name>
+          </channel>
+          <channel id="71559">
+            <display-name>18.2 WDWOCD2</display-name>
+            <display-name>18.2</display-name>
+            <display-name>WDWOCD2</display-name>
+          </channel>
+          <channel id="70785">
+            <display-name>19.1 WUDLLD</display-name>
+            <display-name>19.1</display-name>
+            <display-name>WUDLLD</display-name>
+            <display-name>DEFY TV</display-name>
+          </channel>
+          <channel id="73113">
+            <display-name>19.1 CICOD32</display-name>
+            <display-name>19.1</display-name>
+            <display-name>CICOD32</display-name>
+            <display-name>INDEPENDENT</display-name>
+          </channel>
+          <channel id="70790">
+            <display-name>19.2 WUDLLD2</display-name>
+            <display-name>19.2</display-name>
+            <display-name>WUDLLD2</display-name>
+          </channel>
+          <programme start="20261031010000 +0000" stop="20261031020000 +0000" channel="73228">
+            <title>Counting Cars</title>
+          </programme>
+          <programme start="20261031010000 +0000" stop="20261031020000 +0000" channel="71559">
+            <title>Cozi Show</title>
+          </programme>
+          <programme start="20261031010000 +0000" stop="20261031020000 +0000" channel="70785">
+            <title>Local News</title>
+          </programme>
+          <programme start="20261031010500 +0000" stop="20261031020500 +0000" channel="73113">
+            <title>Canadian News</title>
+          </programme>
+          <programme start="20261031010000 +0000" stop="20261031020000 +0000" channel="70790">
+            <title>Sonlife</title>
+          </programme>
+        </tv>
+    """.trimIndent()
 
     private fun fixture(): String = """
         <?xml version="1.0" ?>

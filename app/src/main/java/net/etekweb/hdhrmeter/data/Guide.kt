@@ -31,15 +31,17 @@ data class GuideProgram(
 
 /**
  * Programs indexed for the lineup. [byNumber] keys are canonical guide numbers
- * such as `2.1`. [byName] holds callsigns that belong to only one channel.
+ * such as `2.1`, and only when a single guide channel uses that number.
+ * [byName] holds callsigns for guide channels that have no number.
  *
  * This is a plain class so a clock tick can replace the surrounding UI state
  * without walking every program to test equality.
  */
-class GuideIndex(
+class GuideIndex internal constructor(
     val byNumber: Map<String, List<GuideProgram>>,
     val byName: Map<String, List<GuideProgram>>,
     val channelCount: Int,
+    private val sourcesByNumber: Map<String, List<GuideSource>>,
 ) {
     fun airing(guideNumber: String, guideName: String, nowMs: Long): GuideProgram? {
         return programsFor(guideNumber, guideName)?.airingAt(nowMs)
@@ -56,15 +58,29 @@ class GuideIndex(
         return programs.filter { it.stopEpochMs > nowMs }
     }
 
+    /**
+     * The lineup number has to be in the guide. A shared callsign does not copy
+     * another subchannel onto a number the guide does not list. When two guide
+     * channels share a number, the lineup callsign picks one.
+     */
     private fun programsFor(guideNumber: String, guideName: String): List<GuideProgram>? {
-        return byNumber[canonicalGuideNumber(guideNumber)]
-            ?: guideNameKeys(guideName).firstNotNullOfOrNull { byName[it] }
+        val sources = sourcesByNumber[canonicalGuideNumber(guideNumber)]
+        if (!sources.isNullOrEmpty()) return chooseNumbered(sources, guideName)?.programs
+        return guideNameKeys(guideName).firstNotNullOfOrNull { byName[it] }
+    }
+
+    private fun chooseNumbered(sources: List<GuideSource>, guideName: String): GuideSource? {
+        if (sources.size == 1) return sources[0]
+        val keys = guideNameKeys(guideName)
+        return sources.filter { source -> source.names.any { it in keys } }.singleOrNull()
     }
 
     /** The next start or stop at or after [nowMs], so the UI can roll to the next program. */
     fun nextBoundary(nowMs: Long): Long? {
         var soonest = Long.MAX_VALUE
-        for (programs in byNumber.values) soonest = sooner(soonest, programs, nowMs)
+        for (sources in sourcesByNumber.values) {
+            for (source in sources) soonest = sooner(soonest, source.programs, nowMs)
+        }
         for (programs in byName.values) soonest = sooner(soonest, programs, nowMs)
         return soonest.takeIf { it != Long.MAX_VALUE }
     }
@@ -450,33 +466,44 @@ private class GuideHandler(private val cutoffEpochMs: Long) : DefaultHandler() {
     }
 
     fun build(): GuideIndex {
-        val byNumber = LinkedHashMap<String, MutableList<GuideProgram>>()
-        val nameOwner = HashMap<String, String>()
-        val ambiguous = HashSet<String>()
-        for ((id, channel) in channels) {
+        val sourcesByNumber = LinkedHashMap<String, MutableList<GuideSource>>()
+        val unnumbered = ArrayList<GuideSource>()
+        for (channel in channels.values) {
             if (!channel.declared && channel.programs.isEmpty()) continue
             channel.programs.sortBy { it.startEpochMs }
-            for (number in channel.numbers) {
-                byNumber.getOrPut(number) { mutableListOf() }.addAll(channel.programs)
+            val source = GuideSource(channel.names.toSet(), channel.programs.toList())
+            if (channel.numbers.isEmpty()) {
+                unnumbered += source
+                continue
             }
-            for (key in channel.names) {
-                val previous = nameOwner.put(key, id)
-                if (previous != null && previous != id) ambiguous += key
+            for (number in channel.numbers) {
+                sourcesByNumber.getOrPut(number) { mutableListOf() }.add(source)
             }
         }
-        for (programs in byNumber.values) programs.sortBy { it.startEpochMs }
+        val byNumber = LinkedHashMap<String, List<GuideProgram>>()
+        for ((number, group) in sourcesByNumber) {
+            if (group.size == 1) byNumber[number] = group[0].programs
+        }
+        val nameOwner = HashMap<String, GuideSource>()
+        val ambiguous = HashSet<String>()
+        for (source in unnumbered) {
+            for (key in source.names) {
+                val previous = nameOwner.put(key, source)
+                if (previous != null && previous !== source) ambiguous += key
+            }
+        }
         val byName = LinkedHashMap<String, List<GuideProgram>>()
-        for (channel in channels.values) {
-            val programs = channel.programs.toList()
-            for (key in channel.names) {
+        for (source in unnumbered) {
+            for (key in source.names) {
                 if (key in ambiguous || key in byName) continue
-                byName[key] = programs
+                byName[key] = source.programs
             }
         }
         return GuideIndex(
-            byNumber = byNumber.mapValues { it.value.toList() },
+            byNumber = byNumber,
             byName = byName,
             channelCount = channelCount,
+            sourcesByNumber = sourcesByNumber.mapValues { it.value.toList() },
         )
     }
 
@@ -521,6 +548,12 @@ private class GuideHandler(private val cutoffEpochMs: Long) : DefaultHandler() {
         return qName.orEmpty()
     }
 }
+
+/** One XMLTV channel. Two stations that share a guide number stay separate. */
+internal class GuideSource(
+    val names: Set<String>,
+    val programs: List<GuideProgram>,
+)
 
 private val XMLTV_TIME = Regex("""^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:\s*([+-])(\d{2})(\d{2}))?$""")
 private val DISPLAY_NUMBER = Regex("""^(\d+(?:\.\d+)?)(?:\s+(\S+))?$""")
