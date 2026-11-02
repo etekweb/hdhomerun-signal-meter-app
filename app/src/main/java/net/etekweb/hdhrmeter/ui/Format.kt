@@ -1,9 +1,11 @@
 package net.etekweb.hdhrmeter.ui
 
 import androidx.compose.ui.graphics.Color
+import net.etekweb.hdhrmeter.data.GuideProgram
 import net.etekweb.hdhrmeter.data.SignalReading
 import net.etekweb.hdhrmeter.data.rfChannelFromFrequencyHz
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
@@ -34,6 +36,68 @@ fun formatProgramDetail(subtitle: String?, episode: String?): String? {
     return listOfNotNull(subtitle?.trim()?.ifBlank { null }, episode?.trim()?.ifBlank { null })
         .joinToString(" · ")
         .ifBlank { null }
+}
+
+/** Episode number, then episode name, when the guide has them. */
+fun formatEpisodeSummary(episode: String?, subtitle: String?): String? {
+    return listOfNotNull(episode?.trim()?.ifBlank { null }, subtitle?.trim()?.ifBlank { null })
+        .joinToString(" · ")
+        .ifBlank { null }
+}
+
+fun formatGuideDay(
+    epochMs: Long,
+    nowMs: Long,
+    zone: ZoneId = ZoneId.systemDefault(),
+    locale: Locale = Locale.getDefault(),
+): String {
+    val date = Instant.ofEpochMilli(epochMs).atZone(zone).toLocalDate()
+    val today = Instant.ofEpochMilli(nowMs).atZone(zone).toLocalDate()
+    return when (date) {
+        today -> "Today"
+        today.plusDays(1) -> "Tomorrow"
+        else -> DateTimeFormatter.ofPattern("EEE, MMM d", locale).format(date)
+    }
+}
+
+fun formatGuideWhen(
+    startMs: Long,
+    stopMs: Long,
+    nowMs: Long,
+    zone: ZoneId = ZoneId.systemDefault(),
+    locale: Locale = Locale.getDefault(),
+): String {
+    return "${formatGuideDay(startMs, nowMs, zone, locale)} · ${formatAirTime(startMs, stopMs, zone, locale)}"
+}
+
+sealed interface ChannelGuideEntry {
+    data class Day(val label: String, val dateKey: String) : ChannelGuideEntry
+    data class Airing(val program: GuideProgram, val onNow: Boolean) : ChannelGuideEntry
+}
+
+/** Day headings plus each airing, in guide order. */
+fun channelGuideEntries(
+    programs: List<GuideProgram>,
+    nowMs: Long,
+    zone: ZoneId = ZoneId.systemDefault(),
+    locale: Locale = Locale.getDefault(),
+): List<ChannelGuideEntry> {
+    if (programs.isEmpty()) return emptyList()
+    val rows = ArrayList<ChannelGuideEntry>(programs.size + 4)
+    var lastDate: LocalDate? = null
+    for (program in programs) {
+        val date = Instant.ofEpochMilli(program.startEpochMs).atZone(zone).toLocalDate()
+        if (date != lastDate) {
+            rows += ChannelGuideEntry.Day(
+                label = formatGuideDay(program.startEpochMs, nowMs, zone, locale),
+                dateKey = date.toString(),
+            )
+            lastDate = date
+        }
+        val onNow = program.startEpochMs <= nowMs && nowMs < program.stopEpochMs
+        rows += ChannelGuideEntry.Airing(program, onNow)
+    }
+    return rows
 }
 
 private fun clock(epochMs: Long, zone: ZoneId, formatter: DateTimeFormatter): String {

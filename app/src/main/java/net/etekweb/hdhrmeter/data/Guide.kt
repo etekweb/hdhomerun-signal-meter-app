@@ -48,6 +48,12 @@ class GuideIndex(
         return programsFor(guideNumber, guideName)?.upcomingAt(nowMs)
     }
 
+    /** Programs still on the air or starting later, earliest first. */
+    fun schedule(guideNumber: String, guideName: String, nowMs: Long): List<GuideProgram> {
+        val programs = programsFor(guideNumber, guideName) ?: return emptyList()
+        return programs.filter { it.stopEpochMs > nowMs }
+    }
+
     private fun programsFor(guideNumber: String, guideName: String): List<GuideProgram>? {
         return byNumber[canonicalGuideNumber(guideNumber)]
             ?: guideNameKeys(guideName).firstNotNullOfOrNull { byName[it] }

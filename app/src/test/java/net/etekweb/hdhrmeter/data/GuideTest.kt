@@ -72,6 +72,12 @@ class GuideTest {
         assertNull(index.airing("2.1", "WJBK", before))
         assertEquals("Law & Order", index.upcoming("2.1", "WJBK", before)?.title)
         assertEquals("Later Show", index.upcoming("2.1", "WJBK", during)?.title)
+        assertEquals(
+            listOf("Law & Order", "Later Show"),
+            index.schedule("2.1", "WJBK", during).map { it.title },
+        )
+        assertEquals(listOf("Later Show"), index.schedule("2.1", "WJBK", onTheHour).map { it.title })
+        assertTrue(index.schedule("999.9", "NOTACHANNEL", during).isEmpty())
         assertEquals("Later Show", index.upcoming("9.9", "WJBKDT", during)?.title)
         assertNull(index.upcoming("2.1", "WJBK", onTheHour))
         assertNull(index.upcoming("2.2", "", during))
