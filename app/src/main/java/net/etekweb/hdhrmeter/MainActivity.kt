@@ -31,13 +31,10 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.ui.Modifier
-import net.etekweb.hdhrmeter.ui.AppBottomBar
+import net.etekweb.hdhrmeter.ui.AppNavigation
 import net.etekweb.hdhrmeter.ui.AppTab
 import net.etekweb.hdhrmeter.ui.ChannelsScreen
 import net.etekweb.hdhrmeter.ui.DvrScreen
@@ -157,57 +154,54 @@ class MainActivity : ComponentActivity() {
                         onVideoBounds = ::onVideoBounds,
                     )
                 } else {
-                    Column(Modifier.fillMaxSize().imePadding()) {
-                        Box(
-                            Modifier
-                                .weight(1f)
-                                .fillMaxWidth(),
-                        ) {
-                            when (state.tab) {
-                                AppTab.Lineup -> TunerGate(title = "Lineup", state = state) { device ->
-                                    ChannelsScreen(
-                                        state = state,
-                                        device = device,
-                                        onRefresh = viewModel::refreshLineup,
-                                        onQuery = viewModel::setQuery,
-                                        onFilter = viewModel::setFilter,
-                                        onWatch = viewModel::watch,
-                                        onReturnScrollHandled = viewModel::consumeReturnChannel,
-                                        onOpenTuners = viewModel::openTuners,
-                                        onCloseTuners = viewModel::closeTuners,
-                                        onRefreshTuners = viewModel::refreshTuners,
-                                        onClearTuner = viewModel::forceClearTuner,
-                                        onToggleFavorite = viewModel::toggleFavorite,
-                                        onDismissFavoriteError = viewModel::dismissFavoriteError,
-                                    )
-                                }
-                                AppTab.Dvr -> TunerGate(title = "DVR", state = state) {
-                                    DvrScreen(
-                                        state = state,
-                                        onEnsure = viewModel::ensureRecordings,
-                                        onRefresh = viewModel::refreshRecordings,
-                                        onOpen = viewModel::openRecording,
-                                        onClose = viewModel::closeRecording,
-                                        onPlay = viewModel::playRecording,
-                                    )
-                                }
-                                AppTab.Settings -> SettingsScreen(
+                    AppNavigation(
+                        tab = state.tab,
+                        onTab = viewModel::selectTab,
+                        modifier = Modifier.fillMaxSize().imePadding(),
+                    ) {
+                        when (state.tab) {
+                            AppTab.Lineup -> TunerGate(title = "Lineup", state = state) { device ->
+                                ChannelsScreen(
                                     state = state,
-                                    onScan = viewModel::scan,
-                                    onHostChange = viewModel::setManualHost,
-                                    onAddDevice = viewModel::addDevice,
-                                    onSelectDevice = viewModel::selectDevice,
-                                    onRemoveDevice = viewModel::removeSavedDevice,
-                                    onGuideDraft = viewModel::setGuideDraft,
-                                    onAddGuide = viewModel::addGuideSource,
-                                    onSelectNone = viewModel::selectGuideNone,
-                                    onSelectHdHomeRun = viewModel::selectGuideHdHomeRun,
-                                    onSelectGuide = viewModel::selectGuideSource,
-                                    onRemoveGuide = viewModel::removeGuideSource,
+                                    device = device,
+                                    onRefresh = viewModel::refreshLineup,
+                                    onQuery = viewModel::setQuery,
+                                    onFilter = viewModel::setFilter,
+                                    onWatch = viewModel::watch,
+                                    onReturnScrollHandled = viewModel::consumeReturnChannel,
+                                    onOpenTuners = viewModel::openTuners,
+                                    onCloseTuners = viewModel::closeTuners,
+                                    onRefreshTuners = viewModel::refreshTuners,
+                                    onClearTuner = viewModel::forceClearTuner,
+                                    onToggleFavorite = viewModel::toggleFavorite,
+                                    onDismissFavoriteError = viewModel::dismissFavoriteError,
                                 )
                             }
+                            AppTab.Dvr -> TunerGate(title = "DVR", state = state) {
+                                DvrScreen(
+                                    state = state,
+                                    onEnsure = viewModel::ensureRecordings,
+                                    onRefresh = viewModel::refreshRecordings,
+                                    onOpen = viewModel::openRecording,
+                                    onClose = viewModel::closeRecording,
+                                    onPlay = viewModel::playRecording,
+                                )
+                            }
+                            AppTab.Settings -> SettingsScreen(
+                                state = state,
+                                onScan = viewModel::scan,
+                                onHostChange = viewModel::setManualHost,
+                                onAddDevice = viewModel::addDevice,
+                                onSelectDevice = viewModel::selectDevice,
+                                onRemoveDevice = viewModel::removeSavedDevice,
+                                onGuideDraft = viewModel::setGuideDraft,
+                                onAddGuide = viewModel::addGuideSource,
+                                onSelectNone = viewModel::selectGuideNone,
+                                onSelectHdHomeRun = viewModel::selectGuideHdHomeRun,
+                                onSelectGuide = viewModel::selectGuideSource,
+                                onRemoveGuide = viewModel::removeGuideSource,
+                            )
                         }
-                        AppBottomBar(state.tab, viewModel::selectTab)
                     }
                 }
             }
