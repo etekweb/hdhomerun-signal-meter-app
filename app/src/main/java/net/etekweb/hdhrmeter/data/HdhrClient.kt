@@ -326,6 +326,11 @@ class HdhrClient(context: Context) {
 
     private data class EngineRecordings(val recordings: List<Recording>, val incomplete: Boolean)
 
+    private fun Recording.atEngine(host: String): Recording {
+        val url = recordingPlayUrl(playUrl, host)
+        return if (url == playUrl) this else copy(playUrl = url)
+    }
+
     private fun recordingsOn(engine: RecordEngine, nowEpochMs: Long): EngineRecordings {
         val response = http(engine.storageUrl, readMs = 20_000)
         if (response.code !in 200..299) {
@@ -338,7 +343,7 @@ class HdhrClient(context: Context) {
         } catch (error: Exception) {
             throw HdhrException("The DVR returned a recording list that could not be read.", error)
         }
-        val recordings = ArrayList(index.recordings)
+        val recordings = ArrayList(index.recordings.map { it.atEngine(engine.host) })
         var incomplete = false
         for (series in index.pending) {
             val url = httpRecordingUrl(rewriteLanUrl(series.url, engine.host))
@@ -358,7 +363,7 @@ class HdhrClient(context: Context) {
                     series.seriesId,
                     nowEpochMs,
                     engine.name,
-                )
+                ).map { it.atEngine(engine.host) }
             } catch (_: Exception) {
                 incomplete = true
             }

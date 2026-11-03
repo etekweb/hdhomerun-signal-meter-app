@@ -30,12 +30,15 @@ import net.etekweb.hdhrmeter.data.DeviceStatus
 import net.etekweb.hdhrmeter.data.TunerStation
 import net.etekweb.hdhrmeter.data.tunerStations
 import net.etekweb.hdhrmeter.data.StreamFailure
+import net.etekweb.hdhrmeter.data.probeRecording
 import net.etekweb.hdhrmeter.data.probeTimeshift
+import net.etekweb.hdhrmeter.data.recordingSpan
 import net.etekweb.hdhrmeter.data.withMobileTranscode
 import net.etekweb.hdhrmeter.player.EnginePhase
 import net.etekweb.hdhrmeter.player.PendingSkip
 import net.etekweb.hdhrmeter.player.PlaybackEngine
 import net.etekweb.hdhrmeter.player.PlaybackShift
+import net.etekweb.hdhrmeter.player.RecordingPlay
 import net.etekweb.hdhrmeter.player.VideoStats
 import net.etekweb.hdhrmeter.player.accumulateSkip
 import net.etekweb.hdhrmeter.player.availableRecordingStartMs
@@ -77,7 +80,12 @@ enum class TunerReach { Checking, Ready, Missing }
 sealed interface Screen {
     data object Shell : Screen
     data class Watch(val device: HdhrDevice, val channel: Channel) : Screen
+    /** A stored recording, played through the same picture as live TV. */
+    data class PlayRecording(val recording: Recording) : Screen
 }
+
+internal val Screen.inPlayer: Boolean
+    get() = this is Screen.Watch || this is Screen.PlayRecording
 
 data class SignalPeaks(
     val strength: Int? = null,
@@ -197,6 +205,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private val store = DeviceStore(app)
     private val engine = PlaybackEngine(app)
     private val shift = PlaybackShift()
+    private val recordingPlay = RecordingPlay()
 
     private val _ui = MutableStateFlow(
         store.loadGuideLibrary().let { guides ->
@@ -263,10 +272,22 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             engine.error.collect { error ->
                 if (error == null) return@collect
-                val screen = _ui.value.screen as? Screen.Watch ?: return@collect
+                val screen = _ui.value.screen
+                if (screen is Screen.PlayRecording) {
+                    if (error.ended) return@collect
+                    _ui.update {
+                        it.copy(
+                            playbackError = error.message,
+                            offerTranscode = false,
+                            phase = PlaybackPhase.Idle,
+                        )
+                    }
+                    return@collect
+                }
+                val watch = screen as? Screen.Watch ?: return@collect
                 if (usingSpecificTuner && !autoRetried && error.hdhrCode == 804) {
                     autoRetried = true
-                    tune(screen.device, screen.channel, transcode = _ui.value.transcoding, forceAuto = true)
+                    tune(watch.device, watch.channel, transcode = _ui.value.transcoding, forceAuto = true)
                     return@collect
                 }
                 _ui.update {
@@ -288,7 +309,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun selectTab(tab: AppTab) {
-        if (_ui.value.screen is Screen.Watch) return
+        if (_ui.value.screen.inPlayer) return
         _ui.update { state -> if (state.tab == tab) state else state.copy(tab = tab) }
     }
 
@@ -345,6 +366,25 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     fun closeRecording() {
         if (_ui.value.dvr.selectedId == null) return
         _ui.update { it.copy(dvr = it.dvr.copy(selectedId = null)) }
+    }
+
+    /** Opens the live player on the recording that is showing its info. */
+    fun playRecording() {
+        val state = _ui.value
+        val recording = state.dvr.recordings.firstOrNull { it.id == state.dvr.selectedId } ?: return
+        if (recording.playUrl.isNullOrBlank()) return
+        cancelChannelHop()
+        _ui.update {
+            it.copy(
+                screen = Screen.PlayRecording(recording),
+                overlayVisible = true,
+                transcoding = false,
+                pendingChannel = null,
+                playbackError = null,
+                tunerReleased = false,
+            )
+        }
+        startRecording(recording)
     }
 
     fun scan() {
@@ -761,6 +801,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     fun watch(channel: Channel) {
         val device = when (val screen = _ui.value.screen) {
             is Screen.Watch -> screen.device
+            is Screen.PlayRecording -> return
             Screen.Shell -> {
                 if (_ui.value.tunerReach != TunerReach.Ready) return
                 _ui.value.selectedDevice ?: return
@@ -801,15 +842,20 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun resume() {
-        val screen = _ui.value.screen as? Screen.Watch ?: return
-        cancelChannelHop()
-        tune(
-            screen.device,
-            screen.channel,
-            transcode = _ui.value.transcoding,
-            forceAuto = false,
-            refreshEngine = engineOrigin == null,
-        )
+        when (val screen = _ui.value.screen) {
+            is Screen.Watch -> {
+                cancelChannelHop()
+                tune(
+                    screen.device,
+                    screen.channel,
+                    transcode = _ui.value.transcoding,
+                    forceAuto = false,
+                    refreshEngine = engineOrigin == null,
+                )
+            }
+            is Screen.PlayRecording -> startRecording(screen.recording)
+            Screen.Shell -> return
+        }
     }
 
     fun stepChannel(delta: Int) {
@@ -875,29 +921,49 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun onBack() {
-        val screen = _ui.value.screen as? Screen.Watch ?: return
-        cancelChannelHop()
-        _ui.update {
-            it.copy(
-                screen = Screen.Shell,
-                tab = AppTab.Lineup,
-                playbackError = null,
-                playbackClock = PlaybackClock(),
-                signal = null,
-                signalNote = null,
-                tunerReleased = false,
-                offerTranscode = false,
-                pendingChannel = null,
-                returnToChannel = screen.channel,
-            )
+        when (val screen = _ui.value.screen) {
+            is Screen.Watch -> {
+                cancelChannelHop()
+                _ui.update {
+                    it.copy(
+                        screen = Screen.Shell,
+                        tab = AppTab.Lineup,
+                        playbackError = null,
+                        playbackClock = PlaybackClock(),
+                        signal = null,
+                        signalNote = null,
+                        tunerReleased = false,
+                        offerTranscode = false,
+                        pendingChannel = null,
+                        returnToChannel = screen.channel,
+                    )
+                }
+            }
+            is Screen.PlayRecording -> {
+                cancelChannelHop()
+                _ui.update {
+                    it.copy(
+                        screen = Screen.Shell,
+                        tab = AppTab.Dvr,
+                        playbackError = null,
+                        playbackClock = PlaybackClock(),
+                        signal = null,
+                        signalNote = null,
+                        tunerReleased = false,
+                        offerTranscode = false,
+                        pendingChannel = null,
+                    )
+                }
+            }
+            Screen.Shell -> return
         }
-        // The guide is already showing. Stopping the stream can block
-        // while the tuner socket closes, so it runs off the UI thread.
+        // The previous page is already showing. Stopping the stream can block
+        // while the socket closes, so it runs off the UI thread.
         stopPlayback()
     }
 
     fun onHostStop() {
-        if (_ui.value.screen !is Screen.Watch || _ui.value.tunerReleased) return
+        if (!_ui.value.screen.inPlayer || _ui.value.tunerReleased) return
         cancelChannelHop()
         stopPlayback()
         _ui.update {
@@ -920,12 +986,17 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     /** Beginning of the show, or the oldest buffered moment when the opening is already gone. */
     fun jumpToAvailableStart() {
         cancelSkip()
+        if (_ui.value.screen is Screen.PlayRecording) {
+            seekRecording(recordingPlay.startMs)
+            return
+        }
         val live = System.currentTimeMillis()
         if (!shift.canSeekAvailableStart(playingProgram()?.startEpochMs, live)) return
         seekAvailableStart(live)
     }
 
     fun jumpToLive() {
+        if (_ui.value.screen is Screen.PlayRecording) return
         val screen = _ui.value.screen as? Screen.Watch ?: return
         if (!shift.active) {
             if (engine.transport.value.playing) return
@@ -938,6 +1009,10 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
 
     fun seekPlayback(wallMs: Long) {
         cancelSkip()
+        if (_ui.value.screen is Screen.PlayRecording) {
+            seekRecording(wallMs)
+            return
+        }
         performSeek(wallMs)
     }
 
@@ -947,6 +1022,10 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun skipPlayback(deltaMs: Long) {
         val state = _ui.value
+        if (state.screen is Screen.PlayRecording) {
+            skipRecording(deltaMs)
+            return
+        }
         if (state.screen !is Screen.Watch) return
         if (!shift.active || !showClock || state.playbackError != null || state.tunerReleased) return
         if (deltaMs == 0L) return
@@ -997,6 +1076,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         tunerJob?.cancel()
         stopPlayback()
         shift.close()
+        recordingPlay.close()
         engine.release()
     }
 
@@ -1183,7 +1263,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun readyDevice(): HdhrDevice? {
-        if (_ui.value.screen is Screen.Watch) return null
+        if (_ui.value.screen.inPlayer) return null
         if (_ui.value.tunerReach != TunerReach.Ready) return null
         return _ui.value.selectedDevice
     }
@@ -1544,7 +1624,12 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun publishClock() {
-        if (!showClock || _ui.value.screen !is Screen.Watch) return
+        if (!showClock) return
+        if (_ui.value.screen is Screen.PlayRecording) {
+            publishRecordingClock()
+            return
+        }
+        if (_ui.value.screen !is Screen.Watch) return
         val now = System.currentTimeMillis()
         val media = engine.transport.value
         val clock = if (shift.active) {
@@ -1660,7 +1745,133 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         // after that is ignored, so leaving the channel does not show a false failure.
         engine.stop()
         shift.stop()
+        recordingPlay.stop()
         releaseWifi()
+    }
+
+    private fun startRecording(recording: Recording) {
+        val url = recording.playUrl ?: return
+        cancelSkip()
+        val generation = ++playGeneration
+        playJob?.cancel()
+        pollJob?.cancel()
+        showClock = false
+        directOn = false
+        engine.expectRestart()
+        shift.stop()
+        recordingPlay.stop()
+        acquireWifi()
+        _ui.update {
+            it.copy(
+                signal = null,
+                peaks = SignalPeaks(),
+                signalNote = null,
+                video = VideoStats(),
+                playbackError = null,
+                playbackClock = PlaybackClock(),
+                offerTranscode = false,
+                tunerReleased = false,
+                phase = PlaybackPhase.Buffering,
+                transcoding = false,
+            )
+        }
+        playJob = viewModelScope.launch {
+            val probed = withContext(Dispatchers.IO) { probeRecording(url) }
+            if (generation != playGeneration) return@launch
+            val failure = probed.failure
+            if (failure != null) {
+                showStreamFailure(failure)
+                return@launch
+            }
+            val now = System.currentTimeMillis()
+            val span = recordingSpan(recording, now, if (probed.range == null) 0L else probed.totalBytes)
+            recordingPlay.begin(url, span, probed.range)
+            if (generation != playGeneration) {
+                recordingPlay.stop()
+                return@launch
+            }
+            showClock = true
+            _ui.update {
+                it.copy(
+                    playbackClock = PlaybackClock(
+                        active = true,
+                        timeshift = recordingPlay.seekable,
+                        playing = true,
+                        bufferStartMs = span.startMs,
+                        positionMs = span.startMs,
+                        liveMs = if (span.bounded) span.endMs else span.startMs + 1L,
+                    ),
+                )
+            }
+            ensureClock()
+            engine.play(recordingPlay.localUrl)
+        }
+    }
+
+    private fun publishRecordingClock() {
+        if (!showClock || _ui.value.screen !is Screen.PlayRecording || !recordingPlay.active) return
+        val sample = recordingPlay.sample(engine.transport.value.mediaTimeMs)
+        _ui.update {
+            it.copy(
+                playbackClock = PlaybackClock(
+                    active = true,
+                    timeshift = recordingPlay.seekable,
+                    playing = engine.transport.value.playing,
+                    bufferStartMs = sample.startMs,
+                    positionMs = sample.positionMs,
+                    liveMs = sample.endMs,
+                ),
+            )
+        }
+    }
+
+    private fun seekRecording(wallMs: Long) {
+        if (!recordingPlay.seekable) return
+        engine.expectRestart()
+        val landed = recordingPlay.seek(wallMs) ?: return
+        skipLandedMs = landed
+        engine.play(recordingPlay.localUrl, keepPicture = true)
+    }
+
+    private fun skipRecording(deltaMs: Long) {
+        val state = _ui.value
+        if (state.screen !is Screen.PlayRecording) return
+        if (!recordingPlay.seekable || !showClock || state.playbackError != null || state.tunerReleased) return
+        if (deltaMs == 0L) return
+        val clock = state.playbackClock
+        val pending = accumulateSkip(
+            pending = state.pendingSkip,
+            positionMs = skipOrigin(clock.positionMs),
+            deltaMs = deltaMs,
+            seekStartMs = clock.bufferStartMs,
+            seekEndMs = clock.liveMs,
+        )
+        if (pending == null && state.pendingSkip == null) return
+        cancelChannelHop()
+        val generation = ++skipGeneration
+        skipJob?.cancel()
+        if (pending == null) {
+            _ui.update { current ->
+                if (current.pendingSkip == null) current else current.copy(pendingSkip = null)
+            }
+            return
+        }
+        _ui.update { it.copy(pendingSkip = pending) }
+        skipJob = viewModelScope.launch {
+            delay(SKIP_SETTLE_MS)
+            if (generation != skipGeneration) return@launch
+            val skip = _ui.value.pendingSkip ?: return@launch
+            if (generation != skipGeneration) return@launch
+            _ui.update { current ->
+                if (generation != skipGeneration || current.pendingSkip == null) {
+                    current
+                } else {
+                    current.copy(pendingSkip = null)
+                }
+            }
+            if (generation != skipGeneration) return@launch
+            seekRecording(skip.targetMs)
+        }
     }
 
     private fun acquireWifi() {

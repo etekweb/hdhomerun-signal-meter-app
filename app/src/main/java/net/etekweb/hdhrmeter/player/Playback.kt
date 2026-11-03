@@ -38,6 +38,8 @@ data class PlaybackFailure(
     val message: String,
     val hdhrCode: Int? = null,
     val offerTranscode: Boolean = false,
+    /** The file or stream reached its end. A recording treats this as finished, not a failure. */
+    val ended: Boolean = false,
 )
 
 /** LibVLC's clock for the connection that is open now. [playing] is false while paused. */
@@ -306,7 +308,7 @@ class PlaybackEngine(context: Context) {
                 }
                 _phase.value = EnginePhase.Ended
                 _transport.update { it.copy(playing = false) }
-                _error.value = PlaybackFailure("The stream ended.")
+                _error.value = PlaybackFailure("The stream ended.", ended = true)
             }
             MediaPlayer.Event.EncounteredError -> {
                 ignoreNextStop = false

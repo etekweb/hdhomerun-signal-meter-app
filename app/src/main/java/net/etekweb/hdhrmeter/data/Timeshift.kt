@@ -57,6 +57,56 @@ internal fun contentRangeStart(header: String?): Long? {
     return match.groupValues[1].toLongOrNull()
 }
 
+/** Total length from `bytes START-END/TOTAL`. A star total means the file is still growing. */
+internal fun contentRangeTotal(header: String?): Long? {
+    if (header.isNullOrBlank()) return null
+    val match = CONTENT_RANGE_TOTAL.find(header.trim()) ?: return null
+    return match.groupValues[1].toLongOrNull()?.takeIf { it > 0L }
+}
+
+/**
+ * File size from a playback response.
+ * A ranged reply that does not start at byte 0 has a Content-Length for that slice only.
+ */
+internal fun recordingFileBytes(headers: Map<String, String>): Long {
+    contentRangeTotal(headers["content-range"])?.let { return it }
+    val start = contentRangeStart(headers["content-range"])
+    if (start != null && start > 0L) return 0L
+    return headers["content-length"]?.toLongOrNull()?.takeIf { it > 0L } ?: 0L
+}
+
+/** Size of one recording, preferring a Range reply so later seeks can use byte offsets. */
+internal data class RecordingProbe(
+    val failure: StreamFailure? = null,
+    val totalBytes: Long = 0,
+    /** Range header the player should send. Null when the engine rejected Range. */
+    val range: String? = null,
+)
+
+internal fun probeRecording(url: String): RecordingProbe {
+    val ranged = openRecordingProbe(url, "bytes=0-")
+    if (ranged.failure == null) return ranged.copy(range = "bytes=0-")
+    if (ranged.failure.hdhrCode != null) return ranged
+    return openRecordingProbe(url, null)
+}
+
+private fun openRecordingProbe(url: String, range: String?): RecordingProbe {
+    val opened = try {
+        openTimeshift(url, range, stream = false)
+    } catch (_: Exception) {
+        return RecordingProbe(failure = StreamFailure("Could not open the recording.", null))
+    }
+    opened.use { head ->
+        if (head.status !in 200..299) {
+            val code = hdhrErrorCode(head.headers.mapValues { listOf(it.value) }, head.errorBody)
+            val message = hdhrErrorMessage(code)
+                ?: "Could not open the recording (HTTP ${head.status})."
+            return RecordingProbe(failure = StreamFailure(message, code))
+        }
+        return RecordingProbe(totalBytes = recordingFileBytes(head.headers))
+    }
+}
+
 /** Oldest and live byte offsets for one record-engine session, sampled back to back. */
 data class TimeshiftProbe(
     val failure: StreamFailure? = null,
@@ -276,5 +326,6 @@ private fun readErrorBody(input: InputStream, extra: ByteArray): String {
 
 private val CHANNEL_NUMBER = Regex("[0-9A-Za-z._-]+")
 private val CONTENT_RANGE = Regex("""bytes\s+(\d+)\s*-""", RegexOption.IGNORE_CASE)
+private val CONTENT_RANGE_TOTAL = Regex("""/\s*(\d+)\s*$""")
 private const val CR = '\r'.code.toByte()
 private const val LF = '\n'.code.toByte()

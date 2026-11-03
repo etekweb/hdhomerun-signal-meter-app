@@ -45,6 +45,7 @@ import net.etekweb.hdhrmeter.ui.HdhrTheme
 import net.etekweb.hdhrmeter.ui.MeterViewModel
 import net.etekweb.hdhrmeter.ui.PlayerScreen
 import net.etekweb.hdhrmeter.ui.Screen
+import net.etekweb.hdhrmeter.ui.inPlayer
 import net.etekweb.hdhrmeter.ui.SettingsScreen
 import net.etekweb.hdhrmeter.ui.TunerGate
 
@@ -68,12 +69,18 @@ class MainActivity : ComponentActivity() {
         setContent {
             val state by viewModel.ui.collectAsStateWithLifecycle()
             val watch = state.screen as? Screen.Watch
-            val keepScreenOn = watch != null &&
+            val playing = state.screen.inPlayer
+            val keepScreenOn = playing &&
                 !state.tunerReleased &&
                 state.playbackError == null
             val showChrome = !inPip && !enteringPip
-            val hideSystemBars = watch != null && !state.overlayVisible && showChrome
-            val pipTitle = watch?.let { "${it.channel.guideNumber} ${it.channel.guideName}" }
+            val hideSystemBars = playing && !state.overlayVisible && showChrome
+            val pipTitle = when {
+                watch != null -> "${watch.channel.guideNumber} ${watch.channel.guideName}"
+                state.screen is Screen.PlayRecording ->
+                    (state.screen as Screen.PlayRecording).recording.title
+                else -> null
+            }
             val videoWidth = state.video.width ?: 0
             val videoHeight = state.video.height ?: 0
             LaunchedEffect(keepScreenOn, pipTitle, videoWidth, videoHeight) {
@@ -126,11 +133,11 @@ class MainActivity : ComponentActivity() {
                     window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 }
             }
-            BackHandler(enabled = state.screen is Screen.Watch) {
+            BackHandler(enabled = playing) {
                 viewModel.onBack()
             }
             HdhrTheme {
-                if (state.screen is Screen.Watch) {
+                if (playing) {
                     PlayerScreen(
                         state = state,
                         onAttach = viewModel::attachVideo,
@@ -181,6 +188,7 @@ class MainActivity : ComponentActivity() {
                                         onRefresh = viewModel::refreshRecordings,
                                         onOpen = viewModel::openRecording,
                                         onClose = viewModel::closeRecording,
+                                        onPlay = viewModel::playRecording,
                                     )
                                 }
                                 AppTab.Settings -> SettingsScreen(

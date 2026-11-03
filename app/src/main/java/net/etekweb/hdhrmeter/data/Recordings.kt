@@ -24,6 +24,8 @@ data class Recording(
     val stillRecording: Boolean,
     val problem: String?,
     val sourceName: String?,
+    /** HTTP MPEG-TS for this file. Null when the engine did not offer playback. */
+    val playUrl: String? = null,
 )
 
 /** Record engines found on the LAN, and the programs they are holding. */
@@ -222,7 +224,57 @@ private fun recordingFrom(
         stillRecording = stillRecording,
         problem = problem,
         sourceName = sourceName,
+        playUrl = item.optText("PlayURL")?.takeIf { it.startsWith("http://") || it.startsWith("https://") },
     )
+}
+
+/** Point a recording PlayURL at the engine host that answered discovery. */
+internal fun recordingPlayUrl(url: String?, engineHost: String): String? {
+    val raw = url?.trim() ?: return null
+    if (!raw.startsWith("http://") && !raw.startsWith("https://")) return null
+    return rewriteLanUrl(raw, engineHost)
+}
+
+/**
+ * The file's place on the clock, and how many bytes it held when playback opened.
+ * [bounded] is false when the engine did not say when the file ends, so the bar
+ * follows the picture and cannot be seeked.
+ */
+internal data class RecordingSpan(
+    val startMs: Long,
+    val endMs: Long,
+    val totalBytes: Long,
+    val bounded: Boolean,
+) {
+    val seekable: Boolean get() = bounded && totalBytes > 1L && endMs > startMs
+
+    /** Byte offset for [wallMs]. The last byte is kept so a seek to the end still opens. */
+    fun byteAt(wallMs: Long): Long {
+        val span = (endMs - startMs).coerceAtLeast(1L)
+        val into = (wallMs - startMs).coerceIn(0L, span)
+        if (into == 0L || totalBytes <= 1L) return 0L
+        if (into >= span) return totalBytes - 1L
+        val byte = (into.toDouble() / span.toDouble() * totalBytes.toDouble()).toLong()
+        return byte.coerceIn(0L, totalBytes - 1L)
+    }
+}
+
+/**
+ * Maps a recording onto the clock.
+ * A finished file uses its record stop and the measured byte length, so seeks land
+ * on the same moment. An in-progress file is still growing, so it plays from the
+ * start and the bar follows the picture.
+ */
+internal fun recordingSpan(recording: Recording, nowMs: Long, totalBytes: Long): RecordingSpan {
+    val start = recording.recordStartEpochMs ?: recording.startEpochMs
+    if (!recording.stillRecording) {
+        val end = recording.recordEndEpochMs ?: recording.endEpochMs
+        if (start != null && end != null && end > start) {
+            return RecordingSpan(start, end, totalBytes.coerceAtLeast(0L), bounded = true)
+        }
+    }
+    val origin = start ?: nowMs
+    return RecordingSpan(origin, origin + 1_000L, totalBytes = 0L, bounded = false)
 }
 
 private fun positiveEpoch(item: JSONObject, key: String): Long? = item.optEpoch(key)?.takeIf { it > 0 }

@@ -31,6 +31,7 @@ class RecordingsTest {
         assertEquals("Skyfall", index.recordings.single().title)
         assertEquals("Bond returns.", index.recordings.single().synopsis)
         assertEquals("702", index.recordings.single().channelNumber)
+        assertNull(index.recordings.single().playUrl)
         assertFalse(index.recordings.single().stillRecording)
     }
 
@@ -78,6 +79,48 @@ class RecordingsTest {
         assertEquals("4.1", recording.channelNumber)
         assertEquals("News", recording.title)
         assertNull(recording.problem)
+    }
+
+    @Test
+    fun playUrlIsKeptAndPointedAtTheEngine() {
+        val body = """
+            [{"Title":"News","ChannelNumber":"4.1","RecordStartTime":1700000000,"RecordEndTime":1700001800,
+              "PlayURL":"http://dvr.local:59090/rec/news"}]
+        """.trimIndent()
+        val recording = parseRecordingIndex(body, nowMs, null).recordings.single()
+        assertEquals("http://dvr.local:59090/rec/news", recording.playUrl)
+        assertEquals("http://10.0.0.9:59090/rec/news", recordingPlayUrl(recording.playUrl, "10.0.0.9"))
+        assertNull(recordingPlayUrl("ftp://dvr.local/rec/news", "10.0.0.9"))
+    }
+
+    @Test
+    fun spanUsesTheFinishedFileAndRefusesAGrowingOne() {
+        val finished = Recording(
+            id = "1",
+            title = "News",
+            episodeTitle = null,
+            episodeNumber = null,
+            synopsis = null,
+            channelNumber = "4.1",
+            channelName = null,
+            startEpochMs = 1_700_000_000_000L,
+            endEpochMs = 1_700_003_600_000L,
+            recordStartEpochMs = 1_700_000_000_000L,
+            recordEndEpochMs = 1_700_003_600_000L,
+            originalAirdateEpochSec = null,
+            stillRecording = false,
+            problem = null,
+            sourceName = null,
+            playUrl = "http://10.0.0.9/rec",
+        )
+        val span = recordingSpan(finished, nowMs, 3_600_000L)
+        assertTrue(span.seekable)
+        assertEquals(0L, span.byteAt(span.startMs))
+        assertEquals(1_800_000L, span.byteAt(span.startMs + 1_800_000L))
+        assertEquals(3_599_999L, span.byteAt(span.endMs))
+        val growing = finished.copy(stillRecording = true, recordEndEpochMs = null)
+        assertFalse(recordingSpan(growing, nowMs, 3_600_000L).seekable)
+        assertFalse(recordingSpan(finished, nowMs, 0L).seekable)
     }
 
     @Test

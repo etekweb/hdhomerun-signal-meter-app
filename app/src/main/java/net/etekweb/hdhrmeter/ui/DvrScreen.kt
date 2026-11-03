@@ -6,16 +6,20 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -50,11 +54,12 @@ fun DvrScreen(
     onRefresh: () -> Unit,
     onOpen: (String) -> Unit,
     onClose: () -> Unit,
+    onPlay: () -> Unit,
 ) {
     LaunchedEffect(Unit) { onEnsure() }
     val selected = state.dvr.recordings.firstOrNull { it.id == state.dvr.selectedId }
     if (selected != null) {
-        RecordingDetail(selected, onClose)
+        RecordingDetail(selected, onClose, onPlay)
     } else {
         RecordingList(state.dvr, onRefresh, onOpen)
     }
@@ -214,7 +219,7 @@ private fun RecordingRow(recording: Recording, nowMs: Long, onClick: () -> Unit)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RecordingDetail(recording: Recording, onClose: () -> Unit) {
+private fun RecordingDetail(recording: Recording, onClose: () -> Unit, onPlay: () -> Unit) {
     BackHandler(onBack = onClose)
     val nowMs = System.currentTimeMillis()
     val episode = recording.episodeNumber?.trim()?.ifBlank { null }
@@ -285,6 +290,16 @@ private fun RecordingDetail(recording: Recording, onClose: () -> Unit) {
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(top = 8.dp),
                 )
+            }
+            if (!recording.playUrl.isNullOrBlank()) {
+                Button(
+                    onClick = onPlay,
+                    modifier = Modifier.padding(top = 12.dp),
+                ) {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Play")
+                }
             }
         }
     }

@@ -65,6 +65,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import net.etekweb.hdhrmeter.data.Channel
 import net.etekweb.hdhrmeter.data.GuideProgram
+import net.etekweb.hdhrmeter.data.Recording
 import net.etekweb.hdhrmeter.data.SignalReading
 import net.etekweb.hdhrmeter.player.PendingSkip
 import net.etekweb.hdhrmeter.player.SKIP_STEP_MS
@@ -93,7 +94,12 @@ fun PlayerScreen(
     showChrome: Boolean,
     onVideoBounds: (Rect) -> Unit,
 ) {
-    val watch = state.screen as Screen.Watch
+    val watch = state.screen as? Screen.Watch
+    val recording = (state.screen as? Screen.PlayRecording)?.recording
+    if (watch == null && recording == null) return
+    val corner = watch?.channel?.guideNumber
+        ?: recording?.channelNumber?.trim()?.ifBlank { null }
+        ?: recording?.title.orEmpty()
     Box(
         Modifier
             .fillMaxSize()
@@ -136,7 +142,8 @@ fun PlayerScreen(
         )
         if (showChrome && state.overlayVisible) {
             SignalOverlay(
-                channel = watch.channel,
+                channel = watch?.channel,
+                recording = recording,
                 state = state,
                 onToggleOverlay = onToggleOverlay,
                 onSelectTab = onSelectOverlayTab,
@@ -177,7 +184,7 @@ fun PlayerScreen(
                     },
             ) {
                 Text(
-                    watch.channel.guideNumber,
+                    corner,
                     color = Color.White.copy(alpha = 0.86f),
                     modifier = Modifier
                         .align(Alignment.BottomStart)
@@ -205,7 +212,8 @@ fun PlayerScreen(
 
 @Composable
 private fun SignalOverlay(
-    channel: Channel,
+    channel: Channel?,
+    recording: Recording?,
     state: UiState,
     onToggleOverlay: () -> Unit,
     onSelectTab: (OverlayTab) -> Unit,
@@ -225,22 +233,34 @@ private fun SignalOverlay(
             .safeDrawingPadding(),
     ) {
         val sidePanel = maxWidth > maxHeight && maxWidth > 700.dp
-        val program = state.guide?.airing(channel.guideNumber, channel.guideName, state.guideNowMs)
-        val upcoming = state.guide?.upcoming(channel.guideNumber, channel.guideName, state.guideNowMs)
+        val program = if (channel != null) {
+            state.guide?.airing(channel.guideNumber, channel.guideName, state.guideNowMs)
+        } else {
+            null
+        }
+        val infoProgram = recording?.let { recordingProgram(it) } ?: program
+        val upcoming = if (channel != null) {
+            state.guide?.upcoming(channel.guideNumber, channel.guideName, state.guideNowMs)
+        } else {
+            null
+        }
         val overlayHeight = maxHeight
+        val number = channel?.guideNumber ?: recording?.channelNumber?.trim().orEmpty()
+        val name = channel?.guideName ?: recording?.title.orEmpty()
         Box(Modifier.fillMaxSize().noRippleClick { onToggleOverlay() })
         if (sidePanel) {
             Row(Modifier.fillMaxSize()) {
                 Column(Modifier.weight(1f).fillMaxHeight()) {
-                    ChannelHeader(channel, onBack)
+                    ChannelHeader(number, name, onBack)
                     Spacer(Modifier.weight(1f))
                     NoticeBlock(state, onTranscode, onResume, Modifier.padding(horizontal = 12.dp))
                     Transport(state, program, onStep, onTogglePlay, onJumpStart, onJumpLive, onSeek, onSkip)
                 }
                 OverlayPanel(
                     channel = channel,
+                    recording = recording,
                     state = state,
-                    program = program,
+                    program = infoProgram,
                     upcoming = upcoming,
                     onSelectTab = onSelectTab,
                     modifier = Modifier
@@ -251,15 +271,16 @@ private fun SignalOverlay(
             }
         } else {
             Column(Modifier.fillMaxSize()) {
-                ChannelHeader(channel, onBack)
+                ChannelHeader(number, name, onBack)
                 BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
                     // Keep the channel buttons and any playback notice below a long description.
                     val panelMax = (maxHeight - 320.dp).coerceAtLeast(120.dp)
                     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Bottom) {
                         OverlayPanel(
                             channel = channel,
+                            recording = recording,
                             state = state,
-                            program = program,
+                            program = infoProgram,
                             upcoming = upcoming,
                             onSelectTab = onSelectTab,
                             modifier = Modifier
@@ -372,7 +393,7 @@ private fun SkipCard(skip: PendingSkip, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ChannelHeader(channel: Channel, onBack: () -> Unit) {
+private fun ChannelHeader(number: String, name: String, onBack: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -383,33 +404,54 @@ private fun ChannelHeader(channel: Channel, onBack: () -> Unit) {
             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Paper)
         }
         Column(Modifier.weight(1f)) {
-            Text(
-                channel.guideNumber,
-                color = Amber,
-                fontFamily = FontFamily.Monospace,
-                style = MaterialTheme.typography.headlineSmall,
-            )
-            Text(
-                channel.guideName,
-                color = Paper,
-                style = MaterialTheme.typography.titleLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            if (number.isNotBlank()) {
+                Text(
+                    number,
+                    color = Amber,
+                    fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.headlineSmall,
+                )
+            }
+            if (name.isNotBlank()) {
+                Text(
+                    name,
+                    color = Paper,
+                    style = MaterialTheme.typography.titleLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
 
+/** Info-tab program for a stored recording. Air times stay on the program, not the file padding. */
+private fun recordingProgram(recording: Recording): GuideProgram? {
+    val start = recording.startEpochMs ?: recording.recordStartEpochMs ?: return null
+    val stop = recording.endEpochMs ?: recording.recordEndEpochMs ?: return null
+    if (stop <= start) return null
+    return GuideProgram(
+        title = recording.title,
+        subtitle = recording.episodeTitle,
+        description = recording.synopsis,
+        episode = recording.episodeNumber,
+        startEpochMs = start,
+        stopEpochMs = stop,
+    )
+}
+
 @Composable
 private fun OverlayPanel(
-    channel: Channel,
+    channel: Channel?,
+    recording: Recording?,
     state: UiState,
     program: GuideProgram?,
     upcoming: GuideProgram?,
     onSelectTab: (OverlayTab) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val tab = state.overlayTab
+    val file = recording != null
+    val tab = if (file) OverlayTab.Info else state.overlayTab
     val showNext = tab == OverlayTab.Info && upcoming != null
     val infoScroll = rememberScrollState()
     val signalScroll = rememberScrollState()
@@ -421,7 +463,7 @@ private fun OverlayPanel(
             .holdClicks(),
     ) {
         Column(Modifier.fillMaxWidth()) {
-            OverlayTabs(selected = tab, onSelect = onSelectTab)
+            if (!file) OverlayTabs(selected = tab, onSelect = onSelectTab)
             Column(
                 Modifier
                     .weight(1f, fill = false)
@@ -431,7 +473,9 @@ private fun OverlayPanel(
                     .padding(top = 12.dp, bottom = if (showNext) 8.dp else 14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                if (tab == OverlayTab.Info) {
+                if (recording != null) {
+                    RecordingInfo(recording, program)
+                } else if (tab == OverlayTab.Info || channel == null) {
                     ProgramInfo(program, state.guideLoading, state.guideError)
                 } else {
                     SignalInfo(channel, state)
@@ -469,6 +513,34 @@ private fun OverlayTabs(selected: OverlayTab, onSelect: (OverlayTab) -> Unit) {
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun RecordingInfo(recording: Recording, program: GuideProgram?) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(recording.title, color = Paper, style = MaterialTheme.typography.titleLarge)
+        recording.episodeNumber?.trim()?.ifBlank { null }?.let { episode ->
+            Text(
+                episode,
+                color = Amber,
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
+        recording.episodeTitle?.trim()?.ifBlank { null }?.let { subtitle ->
+            Text(subtitle, color = Paper, style = MaterialTheme.typography.bodyLarge)
+        }
+        if (program != null) {
+            Text(
+                formatAirTime(program.startEpochMs, program.stopEpochMs),
+                color = Muted,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+    }
+    recording.synopsis?.trim()?.ifBlank { null }?.let { synopsis ->
+        Text(synopsis, color = Paper, style = MaterialTheme.typography.bodyMedium)
     }
 }
 
@@ -718,7 +790,11 @@ private fun NoticeBlock(
         }
         if (state.tunerReleased) {
             Text(
-                "The tuner was released so another device can use it.",
+                if (state.screen is Screen.PlayRecording) {
+                    "Playback stopped."
+                } else {
+                    "The tuner was released so another device can use it."
+                },
                 color = Paper,
                 style = MaterialTheme.typography.bodyMedium,
             )
@@ -739,10 +815,16 @@ private fun Transport(
     onSkip: (Long) -> Unit,
 ) {
     val clock = state.playbackClock
+    val file = state.screen is Screen.PlayRecording
     val controls = clock.active && state.playbackError == null && !state.tunerReleased
+    val endLabel = when {
+        file && clock.timeshift -> formatClockTime(clock.liveMs)
+        file -> ""
+        else -> program?.stopEpochMs?.let { formatClockTime(it) } ?: "Live"
+    }
     Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
         if (controls) {
-            PlaybackBar(clock, program, onSeek)
+            PlaybackBar(clock, program, onSeek, endLabel = endLabel, markLive = !file)
             Row(
                 Modifier.fillMaxWidth().padding(top = 2.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
@@ -767,13 +849,13 @@ private fun Transport(
                 val behind = clock.liveMs - clock.positionMs
                 PlaybackTextButton(
                     "Live",
-                    enabled = clock.timeshift || !clock.playing,
+                    enabled = !file && (clock.timeshift || !clock.playing),
                     onClick = onJumpLive,
                     color = if (behind < 3_000L) Good else Amber,
                 )
             }
         }
-        Row(
+        if (!file) Row(
             modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
@@ -802,6 +884,27 @@ private fun Transport(
             }
             ChannelStepButton("CH +") { onStep(1) }
         }
+        if (file && state.playbackError == null && !state.tunerReleased &&
+            (state.phase == PlaybackPhase.Tuning || state.phase == PlaybackPhase.Buffering)
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.height(18.dp).width(18.dp),
+                    strokeWidth = 2.dp,
+                    color = Amber,
+                )
+                Text(
+                    "Buffering",
+                    color = Paper,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+        }
     }
 }
 
@@ -810,6 +913,8 @@ private fun PlaybackBar(
     clock: PlaybackClock,
     program: GuideProgram?,
     onSeek: (Long) -> Unit,
+    endLabel: String,
+    markLive: Boolean,
 ) {
     val bar = playbackBar(
         bufferStartMs = clock.bufferStartMs,
@@ -832,7 +937,7 @@ private fun PlaybackBar(
                 style = MaterialTheme.typography.labelMedium,
             )
             Text(
-                program?.stopEpochMs?.let { formatClockTime(it) } ?: "Live",
+                endLabel,
                 color = Muted,
                 fontFamily = FontFamily.Monospace,
                 style = MaterialTheme.typography.labelMedium,
@@ -882,7 +987,7 @@ private fun PlaybackBar(
                     .background(Amber),
             )
             val liveGap = kotlin.math.abs(bar.liveMs - shown)
-            if (liveGap > 3_000L) {
+            if (markLive && liveGap > 3_000L) {
                 Box(
                     Modifier.fillMaxWidth(bar.fraction(bar.liveMs)),
                     contentAlignment = Alignment.CenterEnd,
