@@ -95,7 +95,12 @@ class HdhrClient(context: Context) {
             else -> null
         }
         val named = if (engines.size > 1) recordings else recordings.map { it.copy(sourceName = null) }
-        return RecordingLibrary(sortRecordings(named), engines.size, warning)
+        return RecordingLibrary(
+            sortRecordings(named),
+            engines.size,
+            warning,
+            combineStorage(engines.map { it.space }),
+        )
     }
 
     fun deviceForHost(raw: String): HdhrDevice {
@@ -167,6 +172,183 @@ class HdhrClient(context: Context) {
         val url = hdhrGuideUrl(auth)
             ?: throw HdhrException("The tuner did not provide guide access.")
         return fetchGuide(url, nowEpochMs)
+    }
+
+    /**
+     * Recording rules stored for every tuner in [devices]. DeviceAuth is read again
+     * from each tuner and concatenated, because the token rotates.
+     */
+    fun loadRecordingRules(devices: List<HdhrDevice>): List<RecordingRule> {
+        return fetchRules(combinedAuth(devices))
+    }
+
+    /**
+     * Records one airing. An existing DateTimeOnly rule is updated. Otherwise the
+     * series id is taken from the HDHomeRun JSON guide, which XMLTV does not carry.
+     * The record engine is poked so it picks the rule up without waiting for its own sync.
+     */
+    fun scheduleAiring(
+        devices: List<HdhrDevice>,
+        channelNumber: String,
+        startEpochMs: Long,
+        title: String,
+        startPaddingSec: Int,
+        endPaddingSec: Int,
+        existingRuleId: String?,
+    ): ScheduleOutcome {
+        val auth = combinedAuth(devices)
+        val startSec = startEpochMs / 1000L
+        val hit = if (existingRuleId.isNullOrBlank()) {
+            lookupSeriesId(auth, channelNumber, startSec, title)
+        } else {
+            null
+        }
+        val query = oneOffScheduleQuery(
+            hit?.seriesId,
+            existingRuleId,
+            channelNumber,
+            hit?.startEpochSec ?: startSec,
+            startPaddingSec,
+            endPaddingSec,
+        ) ?: throw HdhrException("That program cannot be scheduled.")
+        val url = recordingRulesUrl(auth, query)
+            ?: throw HdhrException("The tuner did not provide access to schedule recordings.")
+        val response = try {
+            http(url, method = "POST", connectMs = 8_000, readMs = 20_000)
+        } catch (error: Exception) {
+            throw HdhrException("Could not schedule the recording.", error)
+        }
+        if (response.code !in 200..299) {
+            throw HdhrException(scheduleFailure(response.code, response.body))
+        }
+        val rules = parseRecordingRules(response.body)
+            ?: throw HdhrException(scheduleFailure(response.code, response.body))
+        if (oneOffRuleFor(rules, channelNumber, startEpochMs) == null) {
+            throw HdhrException("The DVR did not accept this recording.")
+        }
+        return ScheduleOutcome(rules, pokeRecordEngines())
+    }
+
+    /**
+     * Future recordings for the rules on [devices]. One episodes request per series.
+     * [recordedProgramIds] drops episodes the rules say to skip once a copy exists.
+     */
+    fun loadScheduled(
+        devices: List<HdhrDevice>,
+        recordedProgramIds: Set<String>,
+        nowEpochMs: Long = System.currentTimeMillis(),
+    ): ScheduledLibrary {
+        val auth = combinedAuth(devices)
+        val rules = fetchRules(auth)
+        val seriesIds = rules.map { it.seriesId.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (seriesIds.isEmpty()) return ScheduledLibrary(emptyList(), rules, null)
+        val episodes = ArrayList<ScheduledEpisode>()
+        var failed = 0
+        var denied = 0
+        for (seriesId in seriesIds) {
+            val url = episodesUrl(auth, linkedMapOf("SeriesID" to seriesId))
+            if (url == null) {
+                failed++
+                continue
+            }
+            try {
+                val response = http(url, connectMs = 8_000, readMs = 20_000)
+                if (response.code == 401 || response.code == 403) {
+                    failed++
+                    denied++
+                    continue
+                }
+                if (response.code !in 200..299) {
+                    failed++
+                    continue
+                }
+                val parsed = parseScheduledEpisodes(response.body, seriesId)
+                if (parsed == null) failed++ else episodes += parsed
+            } catch (_: Exception) {
+                failed++
+            }
+        }
+        if (failed == seriesIds.size) {
+            if (denied == seriesIds.size) {
+                throw HdhrException("The tuner did not provide access to schedule recordings.")
+            }
+            throw HdhrException("Could not read scheduled recordings.")
+        }
+        val warning = if (failed > 0) "Some scheduled recordings could not be read." else null
+        return ScheduledLibrary(
+            scheduledRecordings(rules, episodes, recordedProgramIds, nowEpochMs),
+            rules,
+            warning,
+        )
+    }
+
+    /** Deletes one file. The episode is not set to record again. */
+    fun deleteRecording(cmdUrl: String) {
+        val url = recordingDeleteUrl(cmdUrl) ?: throw HdhrException("This recording cannot be deleted.")
+        val response = try {
+            http(url, method = "POST", connectMs = 8_000, readMs = 30_000)
+        } catch (error: Exception) {
+            throw HdhrException("Could not delete the recording.", error)
+        }
+        if (response.code !in 200..299) {
+            throw HdhrException(actionFailure(response.code, response.body, "Could not delete the recording"))
+        }
+    }
+
+    /**
+     * Drops one future recording.
+     * A one-off deletes that rule. One episode of a series is skipped and the series rule stays.
+     */
+    fun cancelScheduled(devices: List<HdhrDevice>, item: ScheduledRecording): ScheduleOutcome {
+        val auth = combinedAuth(devices)
+        if (item.oneOff) {
+            val query = deleteRuleQuery(item.ruleId)
+                ?: throw HdhrException("This scheduled recording cannot be canceled.")
+            val rules = postRules(auth, query, "Could not cancel the recording.")
+            if (rules.any { it.id == item.ruleId }) {
+                throw HdhrException("The DVR did not cancel this recording.")
+            }
+            return ScheduleOutcome(rules, pokeRecordEngines("The schedule was updated"))
+        }
+        val programId = item.programId?.trim().orEmpty()
+        val query = skipEpisodeQuery(item.seriesId, programId, item.startEpochMs / 1000L)
+            ?: throw HdhrException("This scheduled recording cannot be canceled.")
+        val url = episodesUrl(auth, query)
+            ?: throw HdhrException("The tuner did not provide access to schedule recordings.")
+        val response = try {
+            http(url, method = "POST", connectMs = 8_000, readMs = 20_000)
+        } catch (error: Exception) {
+            throw HdhrException("Could not cancel the recording.", error)
+        }
+        if (response.code !in 200..299) {
+            throw HdhrException(actionFailure(response.code, response.body, "Could not cancel the recording"))
+        }
+        val refreshed = runCatching { fetchRules(auth) }.getOrNull()
+        val poked = pokeRecordEngines("The schedule was updated")
+        val warning = if (refreshed == null) {
+            val note = "The recording was canceled, but the schedule could not be read again."
+            if (poked == null) note else "$note $poked"
+        } else {
+            poked
+        }
+        return ScheduleOutcome(refreshed.orEmpty(), warning, replaceRules = refreshed != null)
+    }
+
+    /** Changes how early and how late one rule records. A series rule covers every episode. */
+    fun changeRulePadding(
+        devices: List<HdhrDevice>,
+        ruleId: String,
+        startPaddingSec: Int,
+        endPaddingSec: Int,
+    ): ScheduleOutcome {
+        val auth = combinedAuth(devices)
+        val query = oneOffScheduleQuery(null, ruleId, "", 0L, startPaddingSec, endPaddingSec)
+            ?: throw HdhrException("Those record times cannot be saved.")
+        val rules = postRules(auth, query, "Could not update the recording.")
+        if (rules.none { it.id == ruleId.trim() }) {
+            throw HdhrException("The DVR did not accept these record times.")
+        }
+        return ScheduleOutcome(rules, pokeRecordEngines("The schedule was updated"))
     }
 
     fun status(device: HdhrDevice): List<TunerJson> {
@@ -305,12 +487,14 @@ class HdhrClient(context: Context) {
         val base = hit.device.baseUrl?.let { usableBase(it, sourceIp) }?.trimEnd('/')
         var name = "HDHomeRun DVR"
         var storage = hit.device.storageUrl?.let { rewriteLanUrl(it, sourceIp) }
+        var space: StorageSpace? = null
         if (base != null) {
             val response = runCatching { http("$base/discover.json", readMs = 4_000) }.getOrNull()
             if (response != null && response.code in 200..299) {
                 parseRecordEngineDiscover(response.body, sourceIp)?.let { parsed ->
                     name = parsed.name
                     if (!parsed.storageUrl.isNullOrBlank()) storage = parsed.storageUrl
+                    space = parsed.space
                 }
             }
         }
@@ -321,15 +505,13 @@ class HdhrClient(context: Context) {
             name = name,
             host = hostOf(url) ?: sourceIp,
             storageUrl = url,
+            space = space,
         )
     }
 
     private data class EngineRecordings(val recordings: List<Recording>, val incomplete: Boolean)
 
-    private fun Recording.atEngine(host: String): Recording {
-        val url = recordingPlayUrl(playUrl, host)
-        return if (url == playUrl) this else copy(playUrl = url)
-    }
+    private fun Recording.atEngine(host: String): Recording = recordingAtEngine(this, host)
 
     private fun recordingsOn(engine: RecordEngine, nowEpochMs: Long): EngineRecordings {
         val response = http(engine.storageUrl, readMs = 20_000)
@@ -521,12 +703,181 @@ class HdhrClient(context: Context) {
             if (method == "POST") connection.outputStream.use { }
             val code = connection.responseCode
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-            val body = stream?.use { it.readBytes().toString(Charsets.UTF_8) }.orEmpty()
-            return HttpResponse(code, body)
+            val bytes = stream?.use { it.readBytes() } ?: ByteArray(0)
+            return HttpResponse(code, decodeHttpBytes(bytes))
         } finally {
             connection.disconnect()
         }
     }
+
+    private fun fetchRules(auth: String): List<RecordingRule> {
+        val url = recordingRulesUrl(auth)
+            ?: throw HdhrException("The tuner did not provide access to schedule recordings.")
+        val response = try {
+            http(url, connectMs = 8_000, readMs = 20_000)
+        } catch (error: Exception) {
+            throw HdhrException("Could not read recording schedules.", error)
+        }
+        if (response.code == 401 || response.code == 403) {
+            throw HdhrException("The tuner did not provide access to schedule recordings.")
+        }
+        if (response.code !in 200..299) {
+            throw HdhrException("Could not read recording schedules (HTTP ${response.code}).")
+        }
+        return parseRecordingRules(response.body)
+            ?: throw HdhrException("Recording schedules could not be read.")
+    }
+
+    private fun postRules(auth: String, query: Map<String, String>, failure: String): List<RecordingRule> {
+        val url = recordingRulesUrl(auth, query)
+            ?: throw HdhrException("The tuner did not provide access to schedule recordings.")
+        val response = try {
+            http(url, method = "POST", connectMs = 8_000, readMs = 20_000)
+        } catch (error: Exception) {
+            throw HdhrException(failure, error)
+        }
+        if (response.code !in 200..299) {
+            throw HdhrException(actionFailure(response.code, response.body, failure.removeSuffix(".")))
+        }
+        return parseRecordingRules(response.body)
+            ?: throw HdhrException(actionFailure(response.code, response.body, failure.removeSuffix(".")))
+    }
+
+    private fun combinedAuth(devices: List<HdhrDevice>): String {
+        if (devices.isEmpty()) throw HdhrException("Choose a tuner before scheduling a recording.")
+        val tokens = LinkedHashSet<String>()
+        for (device in devices) {
+            val token = runCatching { deviceAuthToken(device) }.getOrNull()
+            if (!token.isNullOrBlank()) tokens += token
+        }
+        if (tokens.isEmpty()) throw HdhrException("The tuner did not provide access to schedule recordings.")
+        return tokens.joinToString("")
+    }
+
+    private fun deviceAuthToken(device: HdhrDevice): String? {
+        val response = http("${device.baseUrl.trimEnd('/')}/discover.json", readMs = 8_000)
+        if (response.code !in 200..299) return null
+        return parseDeviceAuth(response.body)
+    }
+
+    private fun fetchGuidePage(deviceAuth: String, startEpochSec: Long?): GuidePageFetch {
+        val url = hdhrJsonGuideUrl(deviceAuth, startEpochSec) ?: return GuidePageFetch.Denied
+        val response = try {
+            http(url, connectMs = 8_000, readMs = 30_000)
+        } catch (_: Exception) {
+            return GuidePageFetch.Missing
+        }
+        if (response.code == 401 || response.code == 403) return GuidePageFetch.Denied
+        if (response.code !in 200..299) return GuidePageFetch.Missing
+        if (!response.body.trim().removePrefix("\uFEFF").startsWith("[")) return GuidePageFetch.Missing
+        return GuidePageFetch.Ready(response.body)
+    }
+
+    private fun lookupSeriesId(
+        deviceAuth: String,
+        channelNumber: String,
+        startEpochSec: Long,
+        title: String,
+    ): SeriesHit {
+        var cursor: Long? = (startEpochSec - 60L).coerceAtLeast(1L)
+        var previousHorizon = 0L
+        var sawChannel = false
+        var triedOpenPage = false
+        var anyPage = false
+        repeat(8) {
+            when (val page = fetchGuidePage(deviceAuth, cursor)) {
+                GuidePageFetch.Denied ->
+                    throw HdhrException("The tuner did not provide access to schedule recordings.")
+                GuidePageFetch.Missing -> {
+                    if (cursor != null && !triedOpenPage) {
+                        triedOpenPage = true
+                        cursor = null
+                        return@repeat
+                    }
+                    if (!anyPage) throw HdhrException("Could not read the HDHomeRun guide.")
+                    throw seriesIdFailure(sawChannel)
+                }
+                is GuidePageFetch.Ready -> {
+                    anyPage = true
+                    val lookup = readGuideLookup(page.body, channelNumber, startEpochSec, title)
+                        ?: throw HdhrException("The HDHomeRun guide could not be read.")
+                    val seriesId = lookup.seriesId
+                    val guideStart = lookup.airingStartEpochSec
+                    if (!seriesId.isNullOrBlank() && guideStart != null) {
+                        return SeriesHit(seriesId, guideStart)
+                    }
+                    if (lookup.coversAiring) {
+                        throw HdhrException(
+                            "The HDHomeRun guide has no series id for this program, so it cannot be scheduled.",
+                        )
+                    }
+                    sawChannel = sawChannel || lookup.channelSeen
+                    val horizon = lookup.latestEndEpochSec
+                    if (horizon <= previousHorizon || (cursor != null && horizon <= cursor)) {
+                        throw seriesIdFailure(sawChannel)
+                    }
+                    previousHorizon = horizon
+                    cursor = horizon
+                }
+            }
+        }
+        throw seriesIdFailure(sawChannel)
+    }
+
+    /** Asks every record engine to reread the rules. A missing engine is reported, not fatal. */
+    private fun pokeRecordEngines(leadIn: String = "The recording is scheduled"): String? {
+        val engines = runCatching { discoverStorage() }.getOrDefault(emptyList())
+            .mapNotNull { recordEngine(it) }
+            .groupBy { it.deviceId }
+            .map { (_, group) -> group.minWith(compareBy<RecordEngine> { ipRank(it.host) }) }
+        if (engines.isEmpty()) {
+            return "$leadIn, but no record engine answered on the network."
+        }
+        var poked = false
+        for (engine in engines) {
+            val origin = recordEngineOrigin(engine.storageUrl) ?: continue
+            val url = recordingSyncUrl(origin) ?: continue
+            val response = runCatching {
+                http(url, method = "POST", connectMs = 4_000, readMs = 8_000)
+            }.getOrNull()
+            if (response != null && response.code in 200..299) poked = true
+        }
+        if (!poked) return "$leadIn. The record engine has not picked it up yet."
+        return null
+    }
+}
+
+private sealed interface GuidePageFetch {
+    data class Ready(val body: String) : GuidePageFetch
+    data object Missing : GuidePageFetch
+    data object Denied : GuidePageFetch
+}
+
+private data class SeriesHit(val seriesId: String, val startEpochSec: Long)
+
+private fun seriesIdFailure(sawChannel: Boolean): HdhrException {
+    val message = if (sawChannel) {
+        "The HDHomeRun guide has no series id for this program, so it cannot be scheduled."
+    } else {
+        "This channel is not in the HDHomeRun guide, so it cannot be scheduled."
+    }
+    return HdhrException(message)
+}
+
+private fun scheduleFailure(code: Int, body: String): String {
+    return actionFailure(code, body, "Could not schedule the recording")
+}
+
+private fun actionFailure(code: Int, body: String, lead: String): String {
+    if (code == 401 || code == 403) return "The tuner did not provide access to schedule recordings."
+    val text = body.trim()
+    val plain = text.isNotEmpty() &&
+        text.length <= 180 &&
+        !text.startsWith("[") &&
+        !text.startsWith("{") &&
+        !text.startsWith("<")
+    if (plain) return text
+    return "$lead (HTTP $code)."
 }
 
 private fun ipRank(host: String): Int = when {

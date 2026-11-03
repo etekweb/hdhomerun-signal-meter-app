@@ -3,6 +3,8 @@ package net.etekweb.hdhrmeter.data
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URI
+import java.text.DecimalFormatSymbols
+import java.util.Locale
 
 /**
  * One finished or in-progress file on an HDHomeRun record engine.
@@ -26,6 +28,15 @@ data class Recording(
     val sourceName: String?,
     /** HTTP MPEG-TS for this file. Null when the engine did not offer playback. */
     val playUrl: String? = null,
+    val programId: String? = null,
+    /** POST target that deletes this file. Null when the engine did not offer one. */
+    val cmdUrl: String? = null,
+)
+
+/** Free and total bytes from record-engine discover.json. */
+data class StorageSpace(
+    val freeBytes: Long,
+    val totalBytes: Long,
 )
 
 /** Record engines found on the LAN, and the programs they are holding. */
@@ -33,6 +44,7 @@ data class RecordingLibrary(
     val recordings: List<Recording>,
     val enginesFound: Int,
     val warning: String?,
+    val storage: StorageSpace? = null,
 )
 
 internal data class RecordEngine(
@@ -40,11 +52,13 @@ internal data class RecordEngine(
     val name: String,
     val host: String,
     val storageUrl: String,
+    val space: StorageSpace? = null,
 )
 
 internal data class RecordEngineDiscover(
     val name: String,
     val storageUrl: String?,
+    val space: StorageSpace? = null,
 )
 
 internal data class SeriesRequest(
@@ -62,7 +76,95 @@ internal fun parseRecordEngineDiscover(body: String, sourceIp: String): RecordEn
     val json = runCatching { JSONObject(stripRecordingBom(body)) }.getOrNull() ?: return null
     val name = json.optText("FriendlyName") ?: "HDHomeRun DVR"
     val storage = json.optText("StorageURL")?.let { rewriteLanUrl(it, sourceIp) }
-    return RecordEngineDiscover(name, storage)
+    val space = storageSpace(json.optByteCount("FreeSpace"), json.optByteCount("TotalSpace"))
+    return RecordEngineDiscover(name, storage, space)
+}
+
+/**
+ * Keeps a free/total pair only when both byte counts are present and free fits in the total.
+ * A missing total stays unknown rather than being guessed from the recording files.
+ */
+internal fun storageSpace(freeBytes: Long?, totalBytes: Long?): StorageSpace? {
+    if (freeBytes == null || totalBytes == null) return null
+    if (freeBytes < 0L || totalBytes <= 0L || freeBytes > totalBytes) return null
+    return StorageSpace(freeBytes, totalBytes)
+}
+
+/** One ratio for every engine that reported a usable pair. Overflow hides the total. */
+internal fun combineStorage(spaces: List<StorageSpace?>): StorageSpace? {
+    var free = 0L
+    var total = 0L
+    var any = false
+    for (space in spaces) {
+        val usable = space?.takeIf { it.freeBytes >= 0L && it.totalBytes > 0L && it.freeBytes <= it.totalBytes }
+            ?: continue
+        if (free > Long.MAX_VALUE - usable.freeBytes || total > Long.MAX_VALUE - usable.totalBytes) return null
+        free += usable.freeBytes
+        total += usable.totalBytes
+        any = true
+    }
+    if (!any) return null
+    return StorageSpace(free, total)
+}
+
+/** "1.36 TB / 4 TB". Null when the pair is missing or inconsistent. */
+internal fun formatStorageCapacity(space: StorageSpace, locale: Locale = Locale.getDefault()): String? {
+    if (space.freeBytes < 0L || space.totalBytes <= 0L || space.freeBytes > space.totalBytes) return null
+    return "${formatStorageAmount(space.freeBytes, locale)} free / ${formatStorageAmount(space.totalBytes, locale)}"
+}
+
+/** Decimal SI units. Terabytes keep two places; smaller units keep one under 100 and none from there up. */
+internal fun formatStorageAmount(bytes: Long, locale: Locale = Locale.getDefault()): String {
+    if (bytes <= 0L) return "0 B"
+    var unit = 0
+    while (unit < STORAGE_SCALE.lastIndex && bytes >= STORAGE_SCALE[unit + 1]) unit++
+    var scaled = scaledStorage(bytes, unit)
+    while (scaled.whole >= 1_000L && unit < STORAGE_SCALE.lastIndex) {
+        unit++
+        scaled = scaledStorage(bytes, unit)
+    }
+    return "${renderStorage(scaled, locale)} ${STORAGE_UNIT[unit]}"
+}
+
+private val STORAGE_SCALE = longArrayOf(
+    1L,
+    1_000L,
+    1_000_000L,
+    1_000_000_000L,
+    1_000_000_000_000L,
+)
+private val STORAGE_UNIT = arrayOf("B", "KB", "MB", "GB", "TB")
+private val STORAGE_POW10 = longArrayOf(1L, 10L, 100L)
+
+private data class ScaledStorage(val whole: Long, val frac: Int, val decimals: Int)
+
+private fun scaledStorage(bytes: Long, unit: Int): ScaledStorage {
+    val scale = STORAGE_SCALE[unit]
+    val decimals = when (STORAGE_UNIT[unit]) {
+        "B" -> 0
+        "TB" -> 2
+        else -> if (bytes / scale < 100L) 1 else 0
+    }
+    val factor = STORAGE_POW10[decimals]
+    val half = scale / 2
+    val rounded = if (bytes <= (Long.MAX_VALUE - half) / factor) {
+        (bytes * factor + half) / scale
+    } else {
+        Math.round(bytes.toDouble() / scale.toDouble() * factor.toDouble())
+    }
+    return ScaledStorage(
+        whole = rounded / factor,
+        frac = (rounded % factor).toInt(),
+        decimals = decimals,
+    )
+}
+
+private fun renderStorage(scaled: ScaledStorage, locale: Locale): String {
+    if (scaled.decimals == 0 || scaled.frac == 0) return scaled.whole.toString()
+    val separator = DecimalFormatSymbols.getInstance(locale).decimalSeparator
+    val digits = scaled.frac.toString().padStart(scaled.decimals, '0').trimEnd('0').trimEnd('.', ',')
+    if (digits.isEmpty()) return scaled.whole.toString()
+    return "${scaled.whole}$separator$digits"
 }
 
 /**
@@ -225,6 +327,8 @@ private fun recordingFrom(
         problem = problem,
         sourceName = sourceName,
         playUrl = item.optText("PlayURL")?.takeIf { it.startsWith("http://") || it.startsWith("https://") },
+        programId = programId,
+        cmdUrl = item.optText("CmdURL")?.takeIf { it.startsWith("http://") || it.startsWith("https://") },
     )
 }
 
@@ -233,6 +337,14 @@ internal fun recordingPlayUrl(url: String?, engineHost: String): String? {
     val raw = url?.trim() ?: return null
     if (!raw.startsWith("http://") && !raw.startsWith("https://")) return null
     return rewriteLanUrl(raw, engineHost)
+}
+
+/** Point PlayURL and CmdURL at the engine host that answered discovery. */
+internal fun recordingAtEngine(recording: Recording, host: String): Recording {
+    val play = recordingPlayUrl(recording.playUrl, host)
+    val cmd = recordingPlayUrl(recording.cmdUrl, host)
+    if (play == recording.playUrl && cmd == recording.cmdUrl) return recording
+    return recording.copy(playUrl = play, cmdUrl = cmd)
 }
 
 /**
@@ -287,6 +399,28 @@ private fun JSONObject.optEpoch(key: String): Long? {
         is String -> value.trim().toLongOrNull()
         else -> null
     }
+}
+
+/** Integer byte count. Fractional and non-numeric values are unknown. */
+private fun JSONObject.optByteCount(key: String): Long? {
+    if (!has(key) || isNull(key)) return null
+    return when (val value = opt(key)) {
+        null -> null
+        is Long -> value
+        is Int -> value.toLong()
+        is Short -> value.toLong()
+        is Byte -> value.toLong()
+        is String -> value.trim().toLongOrNull()
+        is Number -> longFromWhole(value.toDouble())
+        else -> null
+    }
+}
+
+private fun longFromWhole(value: Double): Long? {
+    if (!value.isFinite() || value < 0.0 || value > Long.MAX_VALUE.toDouble()) return null
+    val whole = value.toLong()
+    if (whole.toDouble() != value) return null
+    return whole
 }
 
 private fun JSONObject.optText(key: String): String? {

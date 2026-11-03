@@ -6,7 +6,7 @@ The phone and the HDHomeRun need to be on the same LAN. The app uses the tunerâ€
 
 ## What you can do
 
-- Lineup, DVR, and Settings are tabs along the bottom. Lineup is the channel list for the selected tuner. DVR lists recordings from an HDHomeRun record engine on the network. Open a recording to see its title, episode, channel, times, and description. Playback and scheduling are not in the app yet.
+- Lineup, DVR, and Settings are tabs along the bottom. Lineup is the channel list for the selected tuner. DVR lists recordings from an HDHomeRun record engine on the network. Open a recording to see its title, episode, channel, times, and description, and play it. Record the current program from the player Info tab, or open a channel in the lineup and choose a program. A confirmation asks how early and how late to record.
 - Open the channel lineup. Search, and filter to HD, favorites, or recently viewed channels. Recents lists channels you have started watching, newest first, and keeps that list for each tuner. Copy-protected channels are listed and marked Protected. They are not played.
 - In Settings, choose None, HDHomeRun from the connected tuner, or one or more guide URLs such as `http://10.0.0.241:8080/xmlguide.xmltv`. The lineup and the player show the program on now, the next program, and the time it starts.
 - Tuners found on the network are listed with tuners you have added. Choose one. If the last tuner does not answer, Lineup and DVR ask you to pick a tuner in Settings.

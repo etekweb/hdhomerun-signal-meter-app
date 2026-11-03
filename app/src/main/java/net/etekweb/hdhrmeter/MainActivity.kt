@@ -41,6 +41,7 @@ import net.etekweb.hdhrmeter.ui.DvrScreen
 import net.etekweb.hdhrmeter.ui.HdhrTheme
 import net.etekweb.hdhrmeter.ui.MeterViewModel
 import net.etekweb.hdhrmeter.ui.PlayerScreen
+import net.etekweb.hdhrmeter.ui.RecordConfirmDialog
 import net.etekweb.hdhrmeter.ui.Screen
 import net.etekweb.hdhrmeter.ui.inPlayer
 import net.etekweb.hdhrmeter.ui.SettingsScreen
@@ -130,8 +131,12 @@ class MainActivity : ComponentActivity() {
                     window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 }
             }
-            BackHandler(enabled = playing) {
-                viewModel.onBack()
+            BackHandler(enabled = state.schedule.pending != null || playing) {
+                when {
+                    state.schedule.saving -> Unit
+                    state.schedule.pending != null -> viewModel.dismissRecording()
+                    else -> viewModel.onBack()
+                }
             }
             HdhrTheme {
                 if (playing) {
@@ -152,6 +157,7 @@ class MainActivity : ComponentActivity() {
                         onSkip = viewModel::skipPlayback,
                         showChrome = showChrome,
                         onVideoBounds = ::onVideoBounds,
+                        onRecord = viewModel::requestRecording,
                     )
                 } else {
                     AppNavigation(
@@ -175,6 +181,8 @@ class MainActivity : ComponentActivity() {
                                     onClearTuner = viewModel::forceClearTuner,
                                     onToggleFavorite = viewModel::toggleFavorite,
                                     onDismissFavoriteError = viewModel::dismissFavoriteError,
+                                    onEnsureSchedule = viewModel::ensureScheduleStatus,
+                                    onRecord = viewModel::requestRecording,
                                 )
                             }
                             AppTab.Dvr -> TunerGate(title = "DVR", state = state) {
@@ -185,6 +193,16 @@ class MainActivity : ComponentActivity() {
                                     onOpen = viewModel::openRecording,
                                     onClose = viewModel::closeRecording,
                                     onPlay = viewModel::playRecording,
+                                    onSection = viewModel::selectDvrSection,
+                                    onEnsureScheduled = viewModel::ensureScheduled,
+                                    onRefreshScheduled = viewModel::refreshScheduled,
+                                    onOpenScheduled = viewModel::openScheduled,
+                                    onDelete = viewModel::requestDelete,
+                                    onConfirmDelete = viewModel::confirmDelete,
+                                    onDismissDelete = viewModel::dismissDelete,
+                                    onEdit = viewModel::requestEditPadding,
+                                    onDismissEdit = viewModel::dismissEditPadding,
+                                    onSavePadding = viewModel::saveScheduledPadding,
                                 )
                             }
                             AppTab.Settings -> SettingsScreen(
@@ -202,6 +220,20 @@ class MainActivity : ComponentActivity() {
                                 onRemoveGuide = viewModel::removeGuideSource,
                             )
                         }
+                    }
+                }
+                if (showChrome) {
+                    state.schedule.pending?.let { pending ->
+                        RecordConfirmDialog(
+                            pending = pending,
+                            rules = state.schedule.rules,
+                            recordings = state.dvr.recordings,
+                            nowMs = state.guideNowMs,
+                            saving = state.schedule.saving,
+                            error = state.schedule.error,
+                            onDismiss = viewModel::dismissRecording,
+                            onConfirm = viewModel::confirmRecording,
+                        )
                     }
                 }
             }

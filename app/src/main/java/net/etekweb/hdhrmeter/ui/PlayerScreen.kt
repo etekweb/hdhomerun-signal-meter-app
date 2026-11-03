@@ -63,9 +63,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import net.etekweb.hdhrmeter.data.AiringRecordStatus
 import net.etekweb.hdhrmeter.data.Channel
 import net.etekweb.hdhrmeter.data.GuideProgram
 import net.etekweb.hdhrmeter.data.Recording
+import net.etekweb.hdhrmeter.data.airingRecordStatus
 import net.etekweb.hdhrmeter.data.SignalReading
 import net.etekweb.hdhrmeter.player.PendingSkip
 import net.etekweb.hdhrmeter.player.SKIP_STEP_MS
@@ -93,6 +95,7 @@ fun PlayerScreen(
     onSkip: (Long) -> Unit,
     showChrome: Boolean,
     onVideoBounds: (Rect) -> Unit,
+    onRecord: (String, String, GuideProgram) -> Unit,
 ) {
     val watch = state.screen as? Screen.Watch
     val recording = (state.screen as? Screen.PlayRecording)?.recording
@@ -156,6 +159,7 @@ fun PlayerScreen(
                 onJumpLive = onJumpLive,
                 onSeek = onSeek,
                 onSkip = onSkip,
+                onRecord = onRecord,
             )
         } else if (showChrome) {
             val touchSlop = LocalViewConfiguration.current.touchSlop
@@ -226,6 +230,7 @@ private fun SignalOverlay(
     onJumpLive: () -> Unit,
     onSeek: (Long) -> Unit,
     onSkip: (Long) -> Unit,
+    onRecord: (String, String, GuideProgram) -> Unit,
 ) {
     BoxWithConstraints(
         Modifier
@@ -239,6 +244,27 @@ private fun SignalOverlay(
             null
         }
         val infoProgram = recording?.let { recordingProgram(it) } ?: program
+        val recordStatus = if (recording == null && channel != null && program != null) {
+            airingRecordStatus(
+                state.schedule.rules,
+                state.dvr.recordings,
+                channel.guideNumber,
+                program,
+                state.guideNowMs,
+            )
+        } else {
+            null
+        }
+        val recordNotice = if (program != null && state.schedule.noticeStartMs == program.startEpochMs) {
+            state.schedule.notice
+        } else {
+            null
+        }
+        val onRecordProgram = if (recordStatus != null && channel != null && program != null) {
+            { onRecord(channel.guideNumber, channel.guideName, program) }
+        } else {
+            null
+        }
         val upcoming = if (channel != null) {
             state.guide?.upcoming(channel.guideNumber, channel.guideName, state.guideNowMs)
         } else {
@@ -262,6 +288,10 @@ private fun SignalOverlay(
                     state = state,
                     program = infoProgram,
                     upcoming = upcoming,
+                    recordStatus = recordStatus,
+                    recordNotice = recordNotice,
+                    onRecord = onRecordProgram,
+                    recordBusy = state.schedule.saving,
                     onSelectTab = onSelectTab,
                     modifier = Modifier
                         .width(340.dp)
@@ -282,6 +312,10 @@ private fun SignalOverlay(
                             state = state,
                             program = infoProgram,
                             upcoming = upcoming,
+                            recordStatus = recordStatus,
+                            recordNotice = recordNotice,
+                            onRecord = onRecordProgram,
+                            recordBusy = state.schedule.saving,
                             onSelectTab = onSelectTab,
                             modifier = Modifier
                                 .heightIn(max = panelMax)
@@ -447,6 +481,10 @@ private fun OverlayPanel(
     state: UiState,
     program: GuideProgram?,
     upcoming: GuideProgram?,
+    recordStatus: AiringRecordStatus?,
+    recordNotice: String?,
+    onRecord: (() -> Unit)?,
+    recordBusy: Boolean,
     onSelectTab: (OverlayTab) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -476,7 +514,15 @@ private fun OverlayPanel(
                 if (recording != null) {
                     RecordingInfo(recording, program)
                 } else if (tab == OverlayTab.Info || channel == null) {
-                    ProgramInfo(program, state.guideLoading, state.guideError)
+                    ProgramInfo(
+                        program,
+                        state.guideLoading,
+                        state.guideError,
+                        recordStatus = if (tab == OverlayTab.Info) recordStatus else null,
+                        recordNotice = if (tab == OverlayTab.Info) recordNotice else null,
+                        onRecord = if (tab == OverlayTab.Info) onRecord else null,
+                        recordBusy = recordBusy,
+                    )
                 } else {
                     SignalInfo(channel, state)
                 }
@@ -545,7 +591,15 @@ private fun RecordingInfo(recording: Recording, program: GuideProgram?) {
 }
 
 @Composable
-private fun ProgramInfo(program: GuideProgram?, guideLoading: Boolean, guideError: String?) {
+private fun ProgramInfo(
+    program: GuideProgram?,
+    guideLoading: Boolean,
+    guideError: String?,
+    recordStatus: AiringRecordStatus?,
+    recordNotice: String?,
+    onRecord: (() -> Unit)?,
+    recordBusy: Boolean,
+) {
     if (program == null) {
         val message = when {
             guideLoading -> "Loading the guide…"
@@ -584,6 +638,14 @@ private fun ProgramInfo(program: GuideProgram?, guideLoading: Boolean, guideErro
             formatAirTime(program.startEpochMs, program.stopEpochMs),
             color = Muted,
             style = MaterialTheme.typography.bodyMedium,
+        )
+    }
+    if (onRecord != null && recordStatus != null) {
+        RecordProgramButton(
+            status = recordStatus,
+            notice = recordNotice,
+            enabled = !recordBusy,
+            onClick = onRecord,
         )
     }
     program.description?.trim()?.ifBlank { null }?.let { description ->

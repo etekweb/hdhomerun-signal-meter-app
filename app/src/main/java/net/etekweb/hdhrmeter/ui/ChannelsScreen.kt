@@ -84,7 +84,9 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import net.etekweb.hdhrmeter.data.Channel
+import net.etekweb.hdhrmeter.data.AiringRecordStatus
 import net.etekweb.hdhrmeter.data.GuideProgram
+import net.etekweb.hdhrmeter.data.airingRecordStatus
 import net.etekweb.hdhrmeter.data.HdhrDevice
 import net.etekweb.hdhrmeter.data.TunerStation
 import net.etekweb.hdhrmeter.data.channelsInViewOrder
@@ -225,7 +227,10 @@ fun ChannelsScreen(
     onClearTuner: (Int) -> Unit,
     onToggleFavorite: (Channel) -> Unit,
     onDismissFavoriteError: () -> Unit,
+    onEnsureSchedule: () -> Unit,
+    onRecord: (String, String, GuideProgram) -> Unit,
 ) {
+    LaunchedEffect(Unit) { onEnsureSchedule() }
     val query = state.query.trim()
     val guide = state.guide
     val nowMs = state.guideNowMs
@@ -453,11 +458,26 @@ fun ChannelsScreen(
         )
     }
     scheduleProgram?.let { program ->
-        ProgramDetailDialog(
-            program = program,
-            nowMs = nowMs,
-            onClose = { scheduleProgram = null },
-        )
+        val channel = scheduleChannel
+        if (channel != null) {
+            ProgramDetailDialog(
+                program = program,
+                nowMs = nowMs,
+                recordStatus = airingRecordStatus(
+                    state.schedule.rules,
+                    state.dvr.recordings,
+                    channel.guideNumber,
+                    program,
+                    nowMs,
+                ),
+                recordNotice = state.schedule.notice?.takeIf {
+                    state.schedule.noticeStartMs == program.startEpochMs
+                },
+                recordBusy = state.schedule.saving,
+                onRecord = { onRecord(channel.guideNumber, channel.guideName, program) },
+                onClose = { scheduleProgram = null },
+            )
+        }
     }
 }
 
@@ -941,6 +961,10 @@ private fun GuideProgramRow(
 private fun ProgramDetailDialog(
     program: GuideProgram,
     nowMs: Long,
+    recordStatus: AiringRecordStatus,
+    recordNotice: String?,
+    recordBusy: Boolean,
+    onRecord: () -> Unit,
     onClose: () -> Unit,
 ) {
     val episode = program.episode?.trim()?.ifBlank { null }
@@ -997,6 +1021,13 @@ private fun ProgramDetailDialog(
                     color = Muted,
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(top = 6.dp, end = 12.dp),
+                )
+                RecordProgramButton(
+                    status = recordStatus,
+                    notice = recordNotice,
+                    enabled = !recordBusy,
+                    onClick = onRecord,
+                    modifier = Modifier.padding(top = 12.dp, end = 12.dp),
                 )
                 if (description != null) {
                     Text(

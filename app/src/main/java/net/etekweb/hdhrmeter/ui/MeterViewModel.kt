@@ -7,7 +7,12 @@ import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import net.etekweb.hdhrmeter.data.Channel
+import net.etekweb.hdhrmeter.data.GuideProgram
 import net.etekweb.hdhrmeter.data.Recording
+import net.etekweb.hdhrmeter.data.RecordingRule
+import net.etekweb.hdhrmeter.data.ScheduledRecording
+import net.etekweb.hdhrmeter.data.StorageSpace
+import net.etekweb.hdhrmeter.data.oneOffRuleFor
 import net.etekweb.hdhrmeter.data.DeviceStore
 import net.etekweb.hdhrmeter.data.previewHop
 import net.etekweb.hdhrmeter.data.GuideIndex
@@ -160,6 +165,7 @@ data class UiState(
     val tunerReleased: Boolean = false,
     val tuners: TunerPanel = TunerPanel(),
     val dvr: DvrState = DvrState(),
+    val schedule: ScheduleState = ScheduleState(),
     val playbackClock: PlaybackClock = PlaybackClock(),
 )
 
@@ -177,15 +183,49 @@ data class PlaybackClock(
     val liveMs: Long = 0,
 )
 
-/** Recordings from HDHomeRun DVR storage. [selectedId] opens that recording's info. */
+/** The airing the confirm dialog is asking about. */
+data class PendingRecording(
+    val channelNumber: String,
+    val channelName: String,
+    val program: GuideProgram,
+)
+
+/** Recording rules from the HDHomeRun account, plus the confirm dialog. */
+data class ScheduleState(
+    val rules: List<RecordingRule> = emptyList(),
+    val loaded: Boolean = false,
+    val loading: Boolean = false,
+    val pending: PendingRecording? = null,
+    val saving: Boolean = false,
+    val error: String? = null,
+    val notice: String? = null,
+    val noticeStartMs: Long? = null,
+)
+
+enum class DvrSection { Recordings, Scheduled }
+
+/** Recordings from HDHomeRun DVR storage, and the future airings still on the schedule. */
 data class DvrState(
+    val section: DvrSection = DvrSection.Recordings,
     val recordings: List<Recording> = emptyList(),
     val loading: Boolean = false,
     val loaded: Boolean = false,
     val error: String? = null,
     val warning: String? = null,
     val enginesFound: Int = 0,
+    val storage: StorageSpace? = null,
     val selectedId: String? = null,
+    val scheduled: List<ScheduledRecording> = emptyList(),
+    val scheduledLoading: Boolean = false,
+    val scheduledLoaded: Boolean = false,
+    val scheduledError: String? = null,
+    val scheduledWarning: String? = null,
+    val selectedScheduledId: String? = null,
+    val acting: Boolean = false,
+    val actionError: String? = null,
+    val notice: String? = null,
+    val confirmDelete: Boolean = false,
+    val editingPadding: Boolean = false,
 )
 
 /** A favorite write the next lineup read must not undo if that read started first. */
@@ -226,6 +266,14 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private var scanJob: Job? = null
     private var recordingJob: Job? = null
     private var recordingGeneration = 0
+    private var scheduledJob: Job? = null
+    private var scheduledGeneration = 0
+    private var dvrActionJob: Job? = null
+    private var dvrActionGeneration = 0
+    private var rulesJob: Job? = null
+    private var rulesGeneration = 0
+    private var scheduleJob: Job? = null
+    private var scheduleGeneration = 0
     private var guideJob: Job? = null
     private var guideClockJob: Job? = null
     private var guideGeneration = 0
@@ -313,6 +361,41 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         _ui.update { state -> if (state.tab == tab) state else state.copy(tab = tab) }
     }
 
+    private fun authDevices(): List<HdhrDevice> {
+        val state = _ui.value
+        return buildList {
+            state.selectedDevice?.let { add(it) }
+            addAll(state.devices)
+        }.distinctBy { device -> device.deviceId.ifBlank { device.baseUrl } }
+    }
+
+    private fun ensureRecordingRules() {
+        refreshRecordingRules(force = false)
+    }
+
+    private fun refreshRecordingRules(force: Boolean) {
+        val devices = authDevices()
+        if (devices.isEmpty()) return
+        val schedule = _ui.value.schedule
+        if (!force && (schedule.loaded || schedule.loading)) return
+        val generation = ++rulesGeneration
+        rulesJob?.cancel()
+        rulesJob = viewModelScope.launch {
+            _ui.update { it.copy(schedule = it.schedule.copy(loading = true)) }
+            val result = withContext(Dispatchers.IO) {
+                runCatching { client.loadRecordingRules(devices) }
+            }
+            if (!isActive || generation != rulesGeneration) return@launch
+            result.onSuccess { rules ->
+                _ui.update {
+                    it.copy(schedule = it.schedule.copy(rules = rules, loaded = true, loading = false))
+                }
+            }.onFailure {
+                _ui.update { it.copy(schedule = it.schedule.copy(loading = false)) }
+            }
+        }
+    }
+
     /** Loads the DVR library the first time the tab is shown. */
     fun ensureRecordings() {
         val dvr = _ui.value.dvr
@@ -332,6 +415,8 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                     val selected = state.dvr.selectedId?.takeIf { id ->
                         library.recordings.any { it.id == id }
                     }
+                    val recordingClosed = state.dvr.selectedId != null && selected == null &&
+                        state.dvr.section == DvrSection.Recordings
                     state.copy(
                         dvr = state.dvr.copy(
                             recordings = library.recordings,
@@ -340,7 +425,10 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                             error = null,
                             warning = library.warning,
                             enginesFound = library.enginesFound,
+                            storage = library.storage,
                             selectedId = selected,
+                            confirmDelete = if (recordingClosed) false else state.dvr.confirmDelete,
+                            actionError = if (recordingClosed) null else state.dvr.actionError,
                         ),
                     )
                 }
@@ -358,14 +446,73 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun selectDvrSection(section: DvrSection) {
+        if (_ui.value.dvr.section == section) return
+        dvrActionGeneration++
+        dvrActionJob?.cancel()
+        _ui.update {
+            it.copy(
+                dvr = it.dvr.copy(
+                    section = section,
+                    selectedId = null,
+                    selectedScheduledId = null,
+                    confirmDelete = false,
+                    editingPadding = false,
+                    acting = false,
+                    actionError = null,
+                    notice = null,
+                ),
+            )
+        }
+    }
+
     fun openRecording(id: String) {
         if (_ui.value.dvr.recordings.none { it.id == id }) return
-        _ui.update { it.copy(dvr = it.dvr.copy(selectedId = id)) }
+        _ui.update {
+            it.copy(
+                dvr = it.dvr.copy(
+                    selectedId = id,
+                    selectedScheduledId = null,
+                    confirmDelete = false,
+                    editingPadding = false,
+                    actionError = null,
+                    notice = null,
+                ),
+            )
+        }
+    }
+
+    fun openScheduled(id: String) {
+        if (_ui.value.dvr.scheduled.none { it.id == id }) return
+        _ui.update {
+            it.copy(
+                dvr = it.dvr.copy(
+                    selectedId = null,
+                    selectedScheduledId = id,
+                    confirmDelete = false,
+                    editingPadding = false,
+                    actionError = null,
+                    notice = null,
+                ),
+            )
+        }
     }
 
     fun closeRecording() {
-        if (_ui.value.dvr.selectedId == null) return
-        _ui.update { it.copy(dvr = it.dvr.copy(selectedId = null)) }
+        val dvr = _ui.value.dvr
+        if (dvr.acting) return
+        if (dvr.selectedId == null && dvr.selectedScheduledId == null) return
+        _ui.update {
+            it.copy(
+                dvr = it.dvr.copy(
+                    selectedId = null,
+                    selectedScheduledId = null,
+                    confirmDelete = false,
+                    editingPadding = false,
+                    actionError = null,
+                ),
+            )
+        }
     }
 
     /** Opens the live player on the recording that is showing its info. */
@@ -385,6 +532,274 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
         startRecording(recording)
+    }
+
+    /** Loads future recordings the first time the Scheduled tab is shown. */
+    fun ensureScheduled() {
+        val dvr = _ui.value.dvr
+        if (dvr.scheduledLoading || dvr.scheduledLoaded) return
+        fetchScheduled(clearNotice = false)
+    }
+
+    fun refreshScheduled() {
+        fetchScheduled(clearNotice = true)
+    }
+
+    fun requestDelete() {
+        val dvr = _ui.value.dvr
+        if (dvr.acting || dvr.editingPadding) return
+        when (dvr.section) {
+            DvrSection.Recordings -> {
+                val recording = dvr.recordings.firstOrNull { it.id == dvr.selectedId } ?: return
+                if (recording.cmdUrl.isNullOrBlank()) {
+                    _ui.update {
+                        it.copy(dvr = it.dvr.copy(actionError = "This recording cannot be deleted."))
+                    }
+                    return
+                }
+            }
+            DvrSection.Scheduled -> {
+                val item = dvr.scheduled.firstOrNull { it.id == dvr.selectedScheduledId } ?: return
+                if (!item.oneOff && item.programId.isNullOrBlank()) {
+                    _ui.update {
+                        it.copy(dvr = it.dvr.copy(actionError = "This scheduled recording cannot be canceled."))
+                    }
+                    return
+                }
+            }
+        }
+        _ui.update { it.copy(dvr = it.dvr.copy(confirmDelete = true, actionError = null)) }
+    }
+
+    fun dismissDelete() {
+        if (_ui.value.dvr.acting) return
+        _ui.update { it.copy(dvr = it.dvr.copy(confirmDelete = false, actionError = null)) }
+    }
+
+    fun confirmDelete() {
+        val dvr = _ui.value.dvr
+        if (dvr.acting || !dvr.confirmDelete) return
+        when (dvr.section) {
+            DvrSection.Recordings -> {
+                val recording = dvr.recordings.firstOrNull { it.id == dvr.selectedId } ?: return
+                val cmd = recording.cmdUrl
+                if (cmd.isNullOrBlank()) {
+                    _ui.update {
+                        it.copy(dvr = it.dvr.copy(actionError = "This recording cannot be deleted."))
+                    }
+                    return
+                }
+                val generation = ++dvrActionGeneration
+                dvrActionJob?.cancel()
+                _ui.update { it.copy(dvr = it.dvr.copy(acting = true, actionError = null)) }
+                dvrActionJob = viewModelScope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        runCatching { client.deleteRecording(cmd) }
+                    }
+                    if (!isActive || generation != dvrActionGeneration) return@launch
+                    result.onSuccess {
+                        _ui.update {
+                            it.copy(
+                                dvr = it.dvr.copy(
+                                    acting = false,
+                                    actionError = null,
+                                    confirmDelete = false,
+                                    editingPadding = false,
+                                    selectedId = null,
+                                    notice = null,
+                                ),
+                            )
+                        }
+                        refreshRecordings()
+                    }.onFailure { error ->
+                        _ui.update {
+                            it.copy(
+                                dvr = it.dvr.copy(
+                                    acting = false,
+                                    actionError = error.message ?: "Could not delete the recording.",
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+            DvrSection.Scheduled -> {
+                val item = dvr.scheduled.firstOrNull { it.id == dvr.selectedScheduledId } ?: return
+                val devices = authDevices()
+                val generation = ++dvrActionGeneration
+                dvrActionJob?.cancel()
+                _ui.update { it.copy(dvr = it.dvr.copy(acting = true, actionError = null)) }
+                dvrActionJob = viewModelScope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        runCatching { client.cancelScheduled(devices, item) }
+                    }
+                    if (!isActive || generation != dvrActionGeneration) return@launch
+                    result.onSuccess { outcome ->
+                        _ui.update { state ->
+                            state.copy(
+                                dvr = state.dvr.copy(
+                                    acting = false,
+                                    actionError = null,
+                                    confirmDelete = false,
+                                    editingPadding = false,
+                                    selectedScheduledId = null,
+                                    notice = outcome.warning,
+                                ),
+                                schedule = if (outcome.replaceRules) {
+                                    state.schedule.copy(rules = outcome.rules, loaded = true)
+                                } else {
+                                    state.schedule
+                                },
+                            )
+                        }
+                        fetchScheduled(clearNotice = false)
+                    }.onFailure { error ->
+                        _ui.update {
+                            it.copy(
+                                dvr = it.dvr.copy(
+                                    acting = false,
+                                    actionError = error.message ?: "Could not cancel the recording.",
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun requestEditPadding() {
+        val dvr = _ui.value.dvr
+        if (dvr.acting || dvr.confirmDelete || dvr.section != DvrSection.Scheduled) return
+        if (dvr.scheduled.none { it.id == dvr.selectedScheduledId }) return
+        _ui.update { it.copy(dvr = it.dvr.copy(editingPadding = true, actionError = null)) }
+    }
+
+    fun dismissEditPadding() {
+        if (_ui.value.dvr.acting) return
+        _ui.update { it.copy(dvr = it.dvr.copy(editingPadding = false, actionError = null)) }
+    }
+
+    fun saveScheduledPadding(startPaddingSec: Int, endPaddingSec: Int) {
+        val dvr = _ui.value.dvr
+        if (dvr.acting || !dvr.editingPadding) return
+        val item = dvr.scheduled.firstOrNull { it.id == dvr.selectedScheduledId } ?: return
+        val devices = authDevices()
+        val ruleId = item.ruleId
+        val generation = ++dvrActionGeneration
+        dvrActionJob?.cancel()
+        _ui.update { it.copy(dvr = it.dvr.copy(acting = true, actionError = null)) }
+        dvrActionJob = viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { client.changeRulePadding(devices, ruleId, startPaddingSec, endPaddingSec) }
+            }
+            if (!isActive || generation != dvrActionGeneration) return@launch
+            result.onSuccess { outcome ->
+                val saved = outcome.rules.firstOrNull { it.id == ruleId }
+                val startPad = saved?.startPaddingSec ?: startPaddingSec
+                val endPad = saved?.endPaddingSec ?: endPaddingSec
+                _ui.update { state ->
+                    state.copy(
+                        dvr = state.dvr.copy(
+                            acting = false,
+                            actionError = null,
+                            editingPadding = false,
+                            notice = outcome.warning,
+                            scheduled = state.dvr.scheduled.map { scheduled ->
+                                if (scheduled.ruleId != ruleId) {
+                                    scheduled
+                                } else {
+                                    scheduled.copy(startPaddingSec = startPad, endPaddingSec = endPad)
+                                }
+                            },
+                        ),
+                        schedule = if (outcome.replaceRules) {
+                            state.schedule.copy(rules = outcome.rules, loaded = true)
+                        } else {
+                            state.schedule
+                        },
+                    )
+                }
+                fetchScheduled(clearNotice = false)
+            }.onFailure { error ->
+                _ui.update {
+                    it.copy(
+                        dvr = it.dvr.copy(
+                            acting = false,
+                            actionError = error.message ?: "Could not update the recording.",
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun fetchScheduled(clearNotice: Boolean) {
+        val devices = authDevices()
+        val generation = ++scheduledGeneration
+        scheduledJob?.cancel()
+        if (devices.isEmpty()) {
+            _ui.update {
+                it.copy(
+                    dvr = it.dvr.copy(
+                        scheduledLoading = false,
+                        scheduledLoaded = true,
+                        scheduledError = "Choose a tuner before scheduling a recording.",
+                        notice = if (clearNotice) null else it.dvr.notice,
+                    ),
+                )
+            }
+            return
+        }
+        val recordedIds = _ui.value.dvr.recordings.mapNotNull { it.programId }.toSet()
+        scheduledJob = viewModelScope.launch {
+            _ui.update {
+                it.copy(
+                    dvr = it.dvr.copy(
+                        scheduledLoading = true,
+                        scheduledError = null,
+                        notice = if (clearNotice) null else it.dvr.notice,
+                    ),
+                )
+            }
+            val result = withContext(Dispatchers.IO) {
+                runCatching { client.loadScheduled(devices, recordedIds) }
+            }
+            if (!isActive || generation != scheduledGeneration) return@launch
+            result.onSuccess { library ->
+                _ui.update { state ->
+                    val selected = state.dvr.selectedScheduledId?.takeIf { id ->
+                        library.recordings.any { it.id == id }
+                    }
+                    val scheduledClosed = state.dvr.selectedScheduledId != null && selected == null &&
+                        state.dvr.section == DvrSection.Scheduled
+                    state.copy(
+                        dvr = state.dvr.copy(
+                            scheduled = library.recordings,
+                            scheduledLoading = false,
+                            scheduledLoaded = true,
+                            scheduledError = null,
+                            scheduledWarning = library.warning,
+                            selectedScheduledId = selected,
+                            confirmDelete = if (scheduledClosed) false else state.dvr.confirmDelete,
+                            editingPadding = if (scheduledClosed) false else state.dvr.editingPadding,
+                            actionError = if (scheduledClosed) null else state.dvr.actionError,
+                        ),
+                        schedule = state.schedule.copy(rules = library.rules, loaded = true),
+                    )
+                }
+            }.onFailure { error ->
+                _ui.update {
+                    it.copy(
+                        dvr = it.dvr.copy(
+                            scheduledLoading = false,
+                            scheduledLoaded = true,
+                            scheduledError = error.message ?: "Could not read scheduled recordings.",
+                        ),
+                    )
+                }
+            }
+        }
     }
 
     fun scan() {
@@ -785,6 +1200,98 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Loads rules and the library once, so a program can show that it is already recording. */
+    fun ensureScheduleStatus() {
+        ensureRecordingRules()
+        ensureRecordings()
+    }
+
+    fun requestRecording(channelNumber: String, channelName: String, program: GuideProgram) {
+        if (_ui.value.schedule.saving) return
+        val number = channelNumber.trim()
+        if (number.isEmpty()) return
+        _ui.update {
+            it.copy(
+                schedule = it.schedule.copy(
+                    pending = PendingRecording(number, channelName.trim(), program),
+                    error = null,
+                    notice = null,
+                    noticeStartMs = null,
+                ),
+            )
+        }
+        ensureRecordingRules()
+    }
+
+    fun dismissRecording() {
+        scheduleGeneration++
+        _ui.update {
+            it.copy(schedule = it.schedule.copy(pending = null, saving = false, error = null))
+        }
+    }
+
+    fun confirmRecording(startPaddingSec: Int, endPaddingSec: Int) {
+        val pending = _ui.value.schedule.pending ?: return
+        if (_ui.value.schedule.saving) return
+        val generation = ++scheduleGeneration
+        val devices = authDevices()
+        val existing = oneOffRuleFor(
+            _ui.value.schedule.rules,
+            pending.channelNumber,
+            pending.program.startEpochMs,
+        )
+        _ui.update { it.copy(schedule = it.schedule.copy(saving = true, error = null)) }
+        scheduleJob?.cancel()
+        scheduleJob = viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    client.scheduleAiring(
+                        devices,
+                        pending.channelNumber,
+                        pending.program.startEpochMs,
+                        pending.program.title,
+                        startPaddingSec,
+                        endPaddingSec,
+                        existing?.id,
+                    )
+                }
+            }
+            if (!isActive) return@launch
+            val current = generation == scheduleGeneration
+            result.onSuccess { outcome ->
+                _ui.update { state ->
+                    state.copy(
+                        schedule = state.schedule.copy(
+                            rules = if (outcome.replaceRules) outcome.rules else state.schedule.rules,
+                            loaded = true,
+                            pending = if (current) null else state.schedule.pending,
+                            saving = if (current) false else state.schedule.saving,
+                            error = if (current) null else state.schedule.error,
+                            notice = if (current) outcome.warning else state.schedule.notice,
+                            noticeStartMs = when {
+                                !current -> state.schedule.noticeStartMs
+                                outcome.warning != null -> pending.program.startEpochMs
+                                else -> null
+                            },
+                        ),
+                    )
+                }
+                refreshRecordings()
+                if (_ui.value.dvr.scheduledLoaded) fetchScheduled(clearNotice = true)
+            }.onFailure { error ->
+                if (!current) return@launch
+                _ui.update {
+                    it.copy(
+                        schedule = it.schedule.copy(
+                            saving = false,
+                            error = error.message ?: "Could not schedule the recording.",
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
     fun dismissFavoriteError() {
         _ui.update { state ->
             if (state.favoriteError == null && state.favoriteErrorGuide == null) state
@@ -823,8 +1330,11 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 transcoding = false,
                 pendingChannel = null,
                 tuners = TunerPanel(),
+                schedule = it.schedule.copy(pending = null, saving = false, error = null),
             )
         }
+        refreshRecordingRules(force = true)
+        refreshRecordings()
         tune(
             device,
             channel,

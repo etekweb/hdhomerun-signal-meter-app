@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Locale
 
 class RecordingsTest {
     private val nowMs = 1_800_000_000_000L
@@ -94,6 +95,21 @@ class RecordingsTest {
     }
 
     @Test
+    fun cmdUrlIsKeptAndPointedAtTheEngine() {
+        val body = """
+            [{"Title":"News","ProgramID":"N1","RecordStartTime":1700000000,"RecordEndTime":1700001800,
+              "PlayURL":"http://dvr.local:59090/rec/news",
+              "CmdURL":"http://dvr.local:59090/rec/news?FileID=1"}]
+        """.trimIndent()
+        val recording = parseRecordingIndex(body, nowMs, null).recordings.single()
+        assertEquals("N1", recording.programId)
+        assertEquals("http://dvr.local:59090/rec/news?FileID=1", recording.cmdUrl)
+        val rewritten = recordingAtEngine(recording, "10.0.0.9")
+        assertEquals("http://10.0.0.9:59090/rec/news", rewritten.playUrl)
+        assertEquals("http://10.0.0.9:59090/rec/news?FileID=1", rewritten.cmdUrl)
+    }
+
+    @Test
     fun spanUsesTheFinishedFileAndRefusesAGrowingOne() {
         val finished = Recording(
             id = "1",
@@ -153,6 +169,84 @@ class RecordingsTest {
         )
         assertEquals("HDHomeRun RECORD", parsed?.name)
         assertEquals("http://10.0.0.9:59090/recorded_files.json", parsed?.storageUrl)
+        assertNull(parsed?.space)
         assertNull(parseRecordEngineDiscover("not json", "10.0.0.9"))
+    }
+
+    @Test
+    fun discoverJsonSuppliesCapacity() {
+        val parsed = parseRecordEngineDiscover(
+            """{"FriendlyName":"HDHomeRun RECORD","StorageURL":"http://dvr.local:59090/recorded_files.json","FreeSpace":1363153027072,"TotalSpace":4000000000000}""",
+            "10.0.0.9",
+        )
+        assertEquals(1_363_153_027_072L, parsed?.space?.freeBytes)
+        assertEquals(4_000_000_000_000L, parsed?.space?.totalBytes)
+        assertEquals(
+            StorageSpace(100L, 1_000L),
+            parseRecordEngineDiscover("""{"FreeSpace":"100","TotalSpace":"1000"}""", "10.0.0.9")?.space,
+        )
+    }
+
+    @Test
+    fun discoverJsonWithoutAUsableTotalLeavesCapacityUnknown() {
+        assertNull(parseRecordEngineDiscover("""{"FreeSpace":1000}""", "10.0.0.9")?.space)
+        assertNull(parseRecordEngineDiscover("""{"FreeSpace":5000,"TotalSpace":1000}""", "10.0.0.9")?.space)
+        assertNull(parseRecordEngineDiscover("""{"FreeSpace":-1,"TotalSpace":1000}""", "10.0.0.9")?.space)
+        assertNull(parseRecordEngineDiscover("""{"FreeSpace":0,"TotalSpace":0}""", "10.0.0.9")?.space)
+        assertNull(parseRecordEngineDiscover("""{"FreeSpace":1.5,"TotalSpace":10}""", "10.0.0.9")?.space)
+    }
+
+    @Test
+    fun capacityReadsAsAvailableOverTotal() {
+        val locale = Locale.US
+        assertEquals("0 B / 4 TB", formatStorageCapacity(StorageSpace(0, 4_000_000_000_000L), locale))
+        assertEquals(
+            "1.36 TB / 4 TB",
+            formatStorageCapacity(StorageSpace(1_360_000_000_000L, 4_000_000_000_000L), locale),
+        )
+        assertEquals(
+            "1.36 TB / 4 TB",
+            formatStorageCapacity(StorageSpace(1_363_153_027_072L, 4_000_000_000_000L), locale),
+        )
+        assertEquals(
+            "842 GB / 1 TB",
+            formatStorageCapacity(StorageSpace(842_000_000_000L, 1_000_000_000_000L), locale),
+        )
+        assertEquals(
+            "99.5 GB / 100 GB",
+            formatStorageCapacity(StorageSpace(99_500_000_000L, 100_000_000_000L), locale),
+        )
+        assertEquals("1.5 KB", formatStorageAmount(1_500L, locale))
+        assertEquals("50 GB", formatStorageAmount(50_000_000_000L, locale))
+        assertEquals("1 TB", formatStorageAmount(999_710_000_000L, locale))
+        assertNull(formatStorageCapacity(StorageSpace(5, 4), locale))
+        assertNull(formatStorageCapacity(StorageSpace(-1, 100), locale))
+        assertEquals(
+            "1,36 TB / 4 TB",
+            formatStorageCapacity(StorageSpace(1_360_000_000_000L, 4_000_000_000_000L), Locale.GERMANY),
+        )
+    }
+
+    @Test
+    fun capacitySumsEnginesThatReportedATotal() {
+        val combined = combineStorage(
+            listOf(
+                StorageSpace(1_000_000_000_000L, 2_000_000_000_000L),
+                null,
+                StorageSpace(5, 1),
+                StorageSpace(500_000_000_000L, 2_000_000_000_000L),
+            ),
+        )
+        assertEquals(StorageSpace(1_500_000_000_000L, 4_000_000_000_000L), combined)
+        assertNull(combineStorage(emptyList()))
+        assertNull(combineStorage(listOf(null, StorageSpace(5, 1))))
+        assertNull(
+            combineStorage(
+                listOf(
+                    StorageSpace(Long.MAX_VALUE - 5, Long.MAX_VALUE - 5),
+                    StorageSpace(10, 10),
+                ),
+            ),
+        )
     }
 }
