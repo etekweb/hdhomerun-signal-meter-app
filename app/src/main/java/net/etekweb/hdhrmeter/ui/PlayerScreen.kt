@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -40,7 +41,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -61,7 +66,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import net.etekweb.hdhrmeter.data.Channel
 import net.etekweb.hdhrmeter.data.GuideProgram
 import net.etekweb.hdhrmeter.data.SignalReading
+import net.etekweb.hdhrmeter.player.PendingSkip
+import net.etekweb.hdhrmeter.player.SKIP_STEP_MS
 import net.etekweb.hdhrmeter.player.VideoStats
+import net.etekweb.hdhrmeter.player.formatSkipDelta
+import net.etekweb.hdhrmeter.player.playbackBar
 import kotlin.math.roundToInt
 import org.videolan.libvlc.util.VLCVideoLayout
 
@@ -76,6 +85,11 @@ fun PlayerScreen(
     onStep: (Int) -> Unit,
     onTranscode: () -> Unit,
     onResume: () -> Unit,
+    onTogglePlay: () -> Unit,
+    onJumpStart: () -> Unit,
+    onJumpLive: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onSkip: (Long) -> Unit,
     showChrome: Boolean,
     onVideoBounds: (Rect) -> Unit,
 ) {
@@ -130,6 +144,11 @@ fun PlayerScreen(
                 onStep = onStep,
                 onTranscode = onTranscode,
                 onResume = onResume,
+                onTogglePlay = onTogglePlay,
+                onJumpStart = onJumpStart,
+                onJumpLive = onJumpLive,
+                onSeek = onSeek,
+                onSkip = onSkip,
             )
         } else if (showChrome) {
             val touchSlop = LocalViewConfiguration.current.touchSlop
@@ -168,12 +187,17 @@ fun PlayerScreen(
             }
         }
         if (showChrome) {
-            state.pendingChannel?.let { pending ->
+            val pending = state.pendingChannel
+            if (pending != null) {
                 ChannelHopCard(
                     channel = pending,
                     program = state.guide?.airing(pending.guideNumber, pending.guideName, state.guideNowMs),
                     modifier = Modifier.align(Alignment.Center),
                 )
+            } else {
+                state.pendingSkip?.let { skip ->
+                    SkipCard(skip, Modifier.align(Alignment.Center))
+                }
             }
         }
     }
@@ -189,6 +213,11 @@ private fun SignalOverlay(
     onStep: (Int) -> Unit,
     onTranscode: () -> Unit,
     onResume: () -> Unit,
+    onTogglePlay: () -> Unit,
+    onJumpStart: () -> Unit,
+    onJumpLive: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onSkip: (Long) -> Unit,
 ) {
     BoxWithConstraints(
         Modifier
@@ -206,7 +235,7 @@ private fun SignalOverlay(
                     ChannelHeader(channel, onBack)
                     Spacer(Modifier.weight(1f))
                     NoticeBlock(state, onTranscode, onResume, Modifier.padding(horizontal = 12.dp))
-                    Transport(state, onStep)
+                    Transport(state, program, onStep, onTogglePlay, onJumpStart, onJumpLive, onSeek, onSkip)
                 }
                 OverlayPanel(
                     channel = channel,
@@ -225,7 +254,7 @@ private fun SignalOverlay(
                 ChannelHeader(channel, onBack)
                 BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
                     // Keep the channel buttons and any playback notice below a long description.
-                    val panelMax = (maxHeight - 240.dp).coerceAtLeast(140.dp)
+                    val panelMax = (maxHeight - 320.dp).coerceAtLeast(120.dp)
                     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Bottom) {
                         OverlayPanel(
                             channel = channel,
@@ -243,7 +272,7 @@ private fun SignalOverlay(
                             onResume,
                             Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         )
-                        Transport(state, onStep)
+                        Transport(state, program, onStep, onTogglePlay, onJumpStart, onJumpLive, onSeek, onSkip)
                     }
                 }
             }
@@ -301,6 +330,43 @@ private fun ChannelHopCard(channel: Channel, program: GuideProgram?, modifier: M
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun SkipCard(skip: PendingSkip, modifier: Modifier = Modifier) {
+    Surface(
+        color = Color(0xE612181D),
+        shape = RoundedCornerShape(16.dp),
+        modifier = modifier
+            .padding(horizontal = 32.dp)
+            .widthIn(max = 440.dp)
+            .fillMaxWidth(0.86f),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 28.dp, vertical = 22.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                "Skipping",
+                color = Muted,
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                formatSkipDelta(skip.deltaMs),
+                color = Amber,
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.displaySmall,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                formatClockTime(skip.targetMs),
+                color = Paper,
+                style = MaterialTheme.typography.titleLarge,
+                textAlign = TextAlign.Center,
+            )
         }
     }
 }
@@ -662,38 +728,203 @@ private fun NoticeBlock(
 }
 
 @Composable
-private fun Transport(state: UiState, onStep: (Int) -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        ChannelStepButton("CH −") { onStep(-1) }
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            when {
-                state.playbackError != null || state.tunerReleased -> Unit
-                state.phase == PlaybackPhase.Tuning || state.phase == PlaybackPhase.Buffering -> {
-                    CircularProgressIndicator(
-                        modifier = Modifier.height(18.dp).width(18.dp),
-                        strokeWidth = 2.dp,
-                        color = Amber,
-                    )
-                    Text(
-                        if (state.phase == PlaybackPhase.Tuning) "Tuning" else "Buffering",
-                        color = Paper,
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                }
-                state.signal?.locked == false -> Text("No lock", color = Bad)
-                state.phase == PlaybackPhase.Ready -> Text("Live", color = Good)
-            }
-            state.signal?.tunerIndex?.let { index ->
-                Text("Tuner $index", color = Muted, style = MaterialTheme.typography.labelSmall)
+private fun Transport(
+    state: UiState,
+    program: GuideProgram?,
+    onStep: (Int) -> Unit,
+    onTogglePlay: () -> Unit,
+    onJumpStart: () -> Unit,
+    onJumpLive: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onSkip: (Long) -> Unit,
+) {
+    val clock = state.playbackClock
+    val controls = clock.active && state.playbackError == null && !state.tunerReleased
+    Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
+        if (controls) {
+            PlaybackBar(clock, program, onSeek)
+            Row(
+                Modifier.fillMaxWidth().padding(top = 2.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PlaybackTextButton("Start", enabled = clock.timeshift, onClick = onJumpStart)
+                PlaybackTextButton(
+                    formatSkipDelta(-SKIP_STEP_MS),
+                    enabled = clock.timeshift,
+                    onClick = { onSkip(-SKIP_STEP_MS) },
+                )
+                PlaybackTextButton(
+                    if (clock.playing) "Pause" else "Play",
+                    enabled = true,
+                    onClick = onTogglePlay,
+                )
+                PlaybackTextButton(
+                    formatSkipDelta(SKIP_STEP_MS),
+                    enabled = clock.timeshift,
+                    onClick = { onSkip(SKIP_STEP_MS) },
+                )
+                val behind = clock.liveMs - clock.positionMs
+                PlaybackTextButton(
+                    "Live",
+                    enabled = clock.timeshift || !clock.playing,
+                    onClick = onJumpLive,
+                    color = if (behind < 3_000L) Good else Amber,
+                )
             }
         }
-        ChannelStepButton("CH +") { onStep(1) }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ChannelStepButton("CH −") { onStep(-1) }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                when {
+                    state.playbackError != null || state.tunerReleased -> Unit
+                    state.phase == PlaybackPhase.Tuning || state.phase == PlaybackPhase.Buffering -> {
+                        CircularProgressIndicator(
+                            modifier = Modifier.height(18.dp).width(18.dp),
+                            strokeWidth = 2.dp,
+                            color = Amber,
+                        )
+                        Text(
+                            if (state.phase == PlaybackPhase.Tuning) "Tuning" else "Buffering",
+                            color = Paper,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                    state.signal?.locked == false -> Text("No lock", color = Bad)
+                }
+                state.signal?.tunerIndex?.let { index ->
+                    Text("Tuner $index", color = Muted, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            ChannelStepButton("CH +") { onStep(1) }
+        }
+    }
+}
+
+@Composable
+private fun PlaybackBar(
+    clock: PlaybackClock,
+    program: GuideProgram?,
+    onSeek: (Long) -> Unit,
+) {
+    val bar = playbackBar(
+        bufferStartMs = clock.bufferStartMs,
+        positionMs = clock.positionMs,
+        liveMs = clock.liveMs,
+        programStartMs = program?.startEpochMs,
+        programStopMs = program?.stopEpochMs,
+        seekable = clock.timeshift,
+    )
+    var dragFraction by remember { mutableStateOf<Float?>(null) }
+    val seek = rememberUpdatedState(onSeek)
+    val latestBar = rememberUpdatedState(bar)
+    val shown = dragFraction?.let { bar.wallAt(it) } ?: bar.positionMs
+    Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(
+                formatClockTime(shown),
+                color = Paper,
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.labelMedium,
+            )
+            Text(
+                program?.stopEpochMs?.let { formatClockTime(it) } ?: "Live",
+                color = Muted,
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(28.dp)
+                .pointerInput(bar.seekable) {
+                    if (!bar.seekable) return@pointerInput
+                    awaitEachGesture {
+                        val down = awaitFirstDown()
+                        val width = size.width
+                        if (width <= 0) return@awaitEachGesture
+                        var fraction = (down.position.x / width).coerceIn(0f, 1f)
+                        dragFraction = fraction
+                        down.consume()
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            fraction = (change.position.x / width).coerceIn(0f, 1f)
+                            dragFraction = fraction
+                            change.consume()
+                            if (!change.pressed) {
+                                seek.value(latestBar.value.wallAt(fraction))
+                                dragFraction = null
+                                break
+                            }
+                        }
+                    }
+                },
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(Color(0xFF3A4550)),
+            )
+            Box(
+                Modifier
+                    .fillMaxWidth(bar.fraction(shown))
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(Amber),
+            )
+            val liveGap = kotlin.math.abs(bar.liveMs - shown)
+            if (liveGap > 3_000L) {
+                Box(
+                    Modifier.fillMaxWidth(bar.fraction(bar.liveMs)),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    Box(Modifier.width(2.dp).height(10.dp).background(Good))
+                }
+            }
+            Box(
+                Modifier.fillMaxWidth(bar.fraction(shown).coerceAtLeast(0.001f)),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Box(
+                    Modifier
+                        .width(12.dp)
+                        .height(12.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Amber),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaybackTextButton(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    color: Color = Paper,
+) {
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(8.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+        colors = ButtonDefaults.textButtonColors(
+            containerColor = Color(0x8012181D),
+            contentColor = color,
+            disabledContentColor = Muted,
+        ),
+    ) {
+        Text(label, maxLines = 1, softWrap = false)
     }
 }
 

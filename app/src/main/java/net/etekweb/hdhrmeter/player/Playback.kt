@@ -2,11 +2,13 @@ package net.etekweb.hdhrmeter.player
 
 import android.content.Context
 import android.net.Uri
+import android.os.SystemClock
 import android.util.Log
 import net.etekweb.hdhrmeter.data.StreamFailure
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import org.videolan.libvlc.LibVLC
@@ -38,15 +40,23 @@ data class PlaybackFailure(
     val offerTranscode: Boolean = false,
 )
 
+/** LibVLC's clock for the connection that is open now. [playing] is false while paused. */
+data class PlayerTransport(
+    val mediaTimeMs: Long = 0,
+    val playing: Boolean = false,
+)
+
 class PlaybackEngine(context: Context) {
     private val appContext = context.applicationContext
     private val _stats = MutableStateFlow(VideoStats())
     private val _phase = MutableStateFlow(EnginePhase.Idle)
     private val _error = MutableStateFlow<PlaybackFailure?>(null)
+    private val _transport = MutableStateFlow(PlayerTransport())
 
     val stats: StateFlow<VideoStats> = _stats.asStateFlow()
     val phase: StateFlow<EnginePhase> = _phase.asStateFlow()
     val error: StateFlow<PlaybackFailure?> = _error.asStateFlow()
+    val transport: StateFlow<PlayerTransport> = _transport.asStateFlow()
 
     private val lib: LibVLC?
     private val player: MediaPlayer?
@@ -55,8 +65,11 @@ class PlaybackEngine(context: Context) {
         Thread(runnable, "hdhr-playback").apply { isDaemon = true }
     }
     private val commandGeneration = AtomicInteger(0)
+    private val startForce = AtomicInteger(0)
 
+    @Volatile private var wantPlaying = true
     @Volatile private var pendingUrl: String? = null
+    @Volatile private var ignoreErrorUntilElapsed = 0L
     @Volatile private var playingUrl: String? = null
     @Volatile private var attachedLayout: VLCVideoLayout? = null
     @Volatile private var ignoreNextStop = false
@@ -78,19 +91,58 @@ class PlaybackEngine(context: Context) {
         }
     }
 
-    fun play(url: String) {
+    fun play(url: String, keepPicture: Boolean = false) {
         val mediaPlayer = player
         if (mediaPlayer == null || lib == null) {
             _error.value = PlaybackFailure(unavailable ?: "Video playback could not start on this phone.")
             _phase.value = EnginePhase.Idle
+            _transport.value = PlayerTransport()
             return
         }
         pendingUrl = url
-        _error.value = null
-        _stats.value = VideoStats()
+        wantPlaying = true
+        startForce.incrementAndGet()
+        // A seek closes the current HTTP socket. That looks like a playback failure
+        // until the replacement stream is open. A fresh tune reports real failures.
+        ignoreErrorUntilElapsed = if (keepPicture) SystemClock.elapsedRealtime() + 1_500 else 0L
+        if (keepPicture) {
+            _error.value = null
+        } else {
+            _error.value = null
+            _stats.value = VideoStats()
+        }
         _phase.value = EnginePhase.Buffering
+        _transport.update { it.copy(playing = true) }
         runCatching { mediaPlayer.volume = 100 }
         enqueueStart()
+    }
+
+    /** The next socket close is a seek or a channel change, not a failure. */
+    fun expectRestart() {
+        ignoreErrorUntilElapsed = SystemClock.elapsedRealtime() + 3_000
+    }
+
+    fun pause() {
+        wantPlaying = false
+        _transport.update { it.copy(playing = false) }
+        val generation = commandGeneration.get()
+        val mediaPlayer = player ?: return
+        commands.execute {
+            if (generation != commandGeneration.get()) return@execute
+            runCatching { mediaPlayer.pause() }
+        }
+    }
+
+    fun resumePlayback() {
+        wantPlaying = true
+        _transport.update { it.copy(playing = true) }
+        val generation = commandGeneration.get()
+        val mediaPlayer = player ?: return
+        commands.execute {
+            if (generation != commandGeneration.get()) return@execute
+            runCatching { mediaPlayer.volume = 100 }
+            runCatching { mediaPlayer.play() }
+        }
     }
 
     fun attach(layout: VLCVideoLayout) {
@@ -118,6 +170,8 @@ class PlaybackEngine(context: Context) {
     fun stop() {
         pendingUrl = null
         playingUrl = null
+        wantPlaying = false
+        startForce.set(0)
         // Drop the surface on this thread, before the slow input shutdown, so
         // disposing the picture does not wait on the tuner socket.
         detachInternal()
@@ -137,6 +191,7 @@ class PlaybackEngine(context: Context) {
         _phase.value = EnginePhase.Idle
         _stats.value = VideoStats()
         _error.value = null
+        _transport.value = PlayerTransport()
     }
 
     fun release() {
@@ -181,7 +236,8 @@ class PlaybackEngine(context: Context) {
         val url = pendingUrl ?: return
         if (attachedLayout == null) return
         if (generation != commandGeneration.get()) return
-        if (playingUrl == url && mediaPlayer.isPlaying) return
+        val force = startForce.getAndSet(0) > 0
+        if (!force && playingUrl == url && mediaPlayer.isPlaying && wantPlaying) return
         ignoreNextStop = true
         mediaPlayer.stop()
         if (generation != commandGeneration.get()) return
@@ -196,6 +252,7 @@ class PlaybackEngine(context: Context) {
         media.release()
         mediaPlayer.play()
         playingUrl = url
+        if (!wantPlaying) runCatching { mediaPlayer.pause() }
     }
 
     private fun detachInternal() {
@@ -207,7 +264,10 @@ class PlaybackEngine(context: Context) {
     private fun onPlayerEvent(event: MediaPlayer.Event) {
         val mediaPlayer = player ?: return
         when (event.type) {
-            MediaPlayer.Event.Opening -> _phase.value = EnginePhase.Buffering
+            MediaPlayer.Event.Opening -> {
+                _phase.value = EnginePhase.Buffering
+                _transport.update { it.copy(mediaTimeMs = 0) }
+            }
             MediaPlayer.Event.Buffering -> {
                 if (event.buffering < 100f) {
                     _phase.value = EnginePhase.Buffering
@@ -219,9 +279,14 @@ class PlaybackEngine(context: Context) {
             MediaPlayer.Event.ESSelected,
             -> {
                 _phase.value = EnginePhase.Ready
+                noteTransport(mediaPlayer, playing = true)
                 publishTracks(mediaPlayer)
             }
-            MediaPlayer.Event.TimeChanged -> publishTracks(mediaPlayer)
+            MediaPlayer.Event.Paused -> noteTransport(mediaPlayer, playing = false)
+            MediaPlayer.Event.TimeChanged -> {
+                _transport.update { it.copy(mediaTimeMs = mediaPlayer.time.coerceAtLeast(0)) }
+                publishTracks(mediaPlayer)
+            }
             MediaPlayer.Event.Stopped -> {
                 if (ignoreNextStop) {
                     ignoreNextStop = false
@@ -229,20 +294,37 @@ class PlaybackEngine(context: Context) {
                 }
                 if (pendingUrl == null) {
                     _phase.value = EnginePhase.Idle
+                    _transport.value = PlayerTransport()
                 }
             }
             MediaPlayer.Event.EndReached -> {
                 ignoreNextStop = false
                 playingUrl = null
+                if (pendingUrl == null) {
+                    _phase.value = EnginePhase.Idle
+                    return
+                }
                 _phase.value = EnginePhase.Ended
+                _transport.update { it.copy(playing = false) }
                 _error.value = PlaybackFailure("The stream ended.")
             }
             MediaPlayer.Event.EncounteredError -> {
                 ignoreNextStop = false
                 playingUrl = null
+                if (pendingUrl == null || SystemClock.elapsedRealtime() < ignoreErrorUntilElapsed) {
+                    if (pendingUrl == null) _phase.value = EnginePhase.Idle
+                    return
+                }
                 _phase.value = EnginePhase.Idle
+                _transport.update { it.copy(playing = false) }
                 _error.value = PlaybackFailure("Playback failed. The stream could not be decoded.")
             }
+        }
+    }
+
+    private fun noteTransport(mediaPlayer: MediaPlayer, playing: Boolean) {
+        _transport.update {
+            it.copy(mediaTimeMs = mediaPlayer.time.coerceAtLeast(0), playing = playing)
         }
     }
 

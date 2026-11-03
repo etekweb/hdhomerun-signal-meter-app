@@ -141,6 +141,11 @@ class MainActivity : ComponentActivity() {
                         onStep = viewModel::stepChannel,
                         onTranscode = viewModel::tryTranscode,
                         onResume = viewModel::resume,
+                        onTogglePlay = viewModel::togglePlayback,
+                        onJumpStart = viewModel::jumpToAvailableStart,
+                        onJumpLive = viewModel::jumpToLive,
+                        onSeek = viewModel::seekPlayback,
+                        onSkip = viewModel::skipPlayback,
                         showChrome = showChrome,
                         onVideoBounds = ::onVideoBounds,
                     )

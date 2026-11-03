@@ -29,10 +29,16 @@ import net.etekweb.hdhrmeter.data.selectTuner
 import net.etekweb.hdhrmeter.data.DeviceStatus
 import net.etekweb.hdhrmeter.data.TunerStation
 import net.etekweb.hdhrmeter.data.tunerStations
+import net.etekweb.hdhrmeter.data.StreamFailure
+import net.etekweb.hdhrmeter.data.probeTimeshift
 import net.etekweb.hdhrmeter.data.withMobileTranscode
 import net.etekweb.hdhrmeter.player.EnginePhase
+import net.etekweb.hdhrmeter.player.PendingSkip
 import net.etekweb.hdhrmeter.player.PlaybackEngine
+import net.etekweb.hdhrmeter.player.PlaybackShift
 import net.etekweb.hdhrmeter.player.VideoStats
+import net.etekweb.hdhrmeter.player.accumulateSkip
+import net.etekweb.hdhrmeter.player.availableRecordingStartMs
 import net.etekweb.hdhrmeter.player.playbackFailure
 import org.videolan.libvlc.util.VLCVideoLayout
 import kotlinx.coroutines.Dispatchers
@@ -48,6 +54,9 @@ import kotlinx.coroutines.withContext
 
 /** Quiet time after the last channel tap before the tuner is changed. */
 private const val CHANNEL_HOP_MS = 500L
+
+/** Quiet time after the last −10s / +10s tap before the picture seeks. */
+private const val SKIP_SETTLE_MS = 500L
 
 enum class ChannelFilter { All, Hd, Favorites, Recents }
 
@@ -127,6 +136,8 @@ data class UiState(
     /** Channel to reveal when the guide returns from the player. */
     val returnToChannel: Channel? = null,
     val pendingChannel: Channel? = null,
+    /** Skip taps still combining. The picture seeks when this clears. */
+    val pendingSkip: PendingSkip? = null,
     val signal: SignalReading? = null,
     val peaks: SignalPeaks = SignalPeaks(),
     val signalNote: String? = null,
@@ -141,6 +152,21 @@ data class UiState(
     val tunerReleased: Boolean = false,
     val tuners: TunerPanel = TunerPanel(),
     val dvr: DvrState = DvrState(),
+    val playbackClock: PlaybackClock = PlaybackClock(),
+)
+
+/**
+ * Where the picture is in the timeshift buffer.
+ * [bufferStartMs] is the oldest moment the player can show.
+ * [positionMs] is the frame on screen. [liveMs] is the broadcast edge.
+ */
+data class PlaybackClock(
+    val active: Boolean = false,
+    val timeshift: Boolean = false,
+    val playing: Boolean = false,
+    val bufferStartMs: Long = 0,
+    val positionMs: Long = 0,
+    val liveMs: Long = 0,
 )
 
 /** Recordings from HDHomeRun DVR storage. [selectedId] opens that recording's info. */
@@ -170,6 +196,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private val client = HdhrClient(app)
     private val store = DeviceStore(app)
     private val engine = PlaybackEngine(app)
+    private val shift = PlaybackShift()
 
     private val _ui = MutableStateFlow(
         store.loadGuideLibrary().let { guides ->
@@ -196,10 +223,14 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private var playJob: Job? = null
     private var pollJob: Job? = null
     private var hopJob: Job? = null
+    private var skipJob: Job? = null
     private var tunerJob: Job? = null
     private var clearJob: Job? = null
     private var playGeneration = 0
     private var hopGeneration = 0
+    private var skipGeneration = 0
+    /** Picture position of the last seek, until the clock reports it. */
+    private var skipLandedMs: Long? = null
     private var tunerGeneration = 0
     private var probeGeneration = 0
     private var lineupGeneration = 0
@@ -212,6 +243,13 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private var usingSpecificTuner = false
     private var autoRetried = false
     private var wifiLock: WifiManager.WifiLock? = null
+    private var engineOrigin: String? = null
+    private var engineOriginKnown = false
+    private var showClock = false
+    private var directOn = false
+    private var directWall0 = 0L
+    private var directMedia0 = 0L
+    private var clockJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -746,7 +784,13 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 tuners = TunerPanel(),
             )
         }
-        tune(device, channel, transcode = false, forceAuto = false)
+        tune(
+            device,
+            channel,
+            transcode = false,
+            forceAuto = false,
+            refreshEngine = !engineOriginKnown || engineOrigin == null,
+        )
     }
 
     fun tryTranscode() {
@@ -759,11 +803,18 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     fun resume() {
         val screen = _ui.value.screen as? Screen.Watch ?: return
         cancelChannelHop()
-        tune(screen.device, screen.channel, transcode = _ui.value.transcoding, forceAuto = false)
+        tune(
+            screen.device,
+            screen.channel,
+            transcode = _ui.value.transcoding,
+            forceAuto = false,
+            refreshEngine = engineOrigin == null,
+        )
     }
 
     fun stepChannel(delta: Int) {
         val screen = _ui.value.screen as? Screen.Watch ?: return
+        cancelSkip()
         val next = previewHop(_ui.value.channels, screen.channel, _ui.value.pendingChannel, delta)
         val generation = ++hopGeneration
         hopJob?.cancel()
@@ -831,6 +882,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 screen = Screen.Shell,
                 tab = AppTab.Lineup,
                 playbackError = null,
+                playbackClock = PlaybackClock(),
                 signal = null,
                 signalNote = null,
                 tunerReleased = false,
@@ -854,8 +906,86 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 phase = PlaybackPhase.Idle,
                 signal = null,
                 playbackError = null,
+                playbackClock = PlaybackClock(),
                 pendingChannel = null,
             )
+        }
+    }
+
+    fun togglePlayback() {
+        if (!showClock || _ui.value.playbackError != null || _ui.value.tunerReleased) return
+        if (engine.transport.value.playing) engine.pause() else engine.resumePlayback()
+    }
+
+    /** Beginning of the show, or the oldest buffered moment when the opening is already gone. */
+    fun jumpToAvailableStart() {
+        cancelSkip()
+        val live = System.currentTimeMillis()
+        if (!shift.canSeekAvailableStart(playingProgram()?.startEpochMs, live)) return
+        seekAvailableStart(live)
+    }
+
+    fun jumpToLive() {
+        val screen = _ui.value.screen as? Screen.Watch ?: return
+        if (!shift.active) {
+            if (engine.transport.value.playing) return
+            tune(screen.device, screen.channel, transcode = _ui.value.transcoding, forceAuto = false)
+            return
+        }
+        cancelSkip()
+        seekShift(System.currentTimeMillis(), joinLive = true)
+    }
+
+    fun seekPlayback(wallMs: Long) {
+        cancelSkip()
+        performSeek(wallMs)
+    }
+
+    /**
+     * Adds [deltaMs] to a skip burst. Quick repeats share one anchor and one
+     * seek, and the center card shows the combined offset until the quiet time ends.
+     */
+    fun skipPlayback(deltaMs: Long) {
+        val state = _ui.value
+        if (state.screen !is Screen.Watch) return
+        if (!shift.active || !showClock || state.playbackError != null || state.tunerReleased) return
+        if (deltaMs == 0L) return
+        val clock = state.playbackClock
+        val seekStart = availableRecordingStartMs(playingProgram()?.startEpochMs, clock.bufferStartMs)
+        val seekEnd = maxOf(clock.liveMs, seekStart)
+        val pending = accumulateSkip(
+            pending = state.pendingSkip,
+            positionMs = skipOrigin(clock.positionMs),
+            deltaMs = deltaMs,
+            seekStartMs = seekStart,
+            seekEndMs = seekEnd,
+        )
+        if (pending != null && !canSeekWall(pending.targetMs)) return
+        if (pending == null && state.pendingSkip == null) return
+        cancelChannelHop()
+        val generation = ++skipGeneration
+        skipJob?.cancel()
+        if (pending == null) {
+            _ui.update { current ->
+                if (current.pendingSkip == null) current else current.copy(pendingSkip = null)
+            }
+            return
+        }
+        _ui.update { it.copy(pendingSkip = pending) }
+        skipJob = viewModelScope.launch {
+            delay(SKIP_SETTLE_MS)
+            if (generation != skipGeneration) return@launch
+            val skip = _ui.value.pendingSkip ?: return@launch
+            if (generation != skipGeneration) return@launch
+            _ui.update { current ->
+                if (generation != skipGeneration || current.pendingSkip == null) {
+                    current
+                } else {
+                    current.copy(pendingSkip = null)
+                }
+            }
+            if (generation != skipGeneration) return@launch
+            performSeek(skip.targetMs)
         }
     }
 
@@ -863,8 +993,10 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         guideJob?.cancel()
         guideClockJob?.cancel()
         hopJob?.cancel()
+        skipJob?.cancel()
         tunerJob?.cancel()
         stopPlayback()
+        shift.close()
         engine.release()
     }
 
@@ -1237,12 +1369,23 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun tune(device: HdhrDevice, channel: Channel, transcode: Boolean, forceAuto: Boolean) {
+    private fun tune(
+        device: HdhrDevice,
+        channel: Channel,
+        transcode: Boolean,
+        forceAuto: Boolean,
+        refreshEngine: Boolean = false,
+    ) {
+        cancelSkip()
         rememberViewed(device.deviceId, channel.guideNumber)
         if (!forceAuto) autoRetried = false
         val generation = ++playGeneration
         playJob?.cancel()
         pollJob?.cancel()
+        showClock = false
+        directOn = false
+        engine.expectRestart()
+        shift.stop()
         acquireWifi()
         _ui.update {
             it.copy(
@@ -1251,6 +1394,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 signalNote = null,
                 video = VideoStats(),
                 playbackError = null,
+                playbackClock = PlaybackClock(),
                 offerTranscode = false,
                 tunerReleased = false,
                 phase = PlaybackPhase.Tuning,
@@ -1270,30 +1414,171 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 PreparedStream(url, tuner, client.localAddressToward(device.host))
             }
             if (generation != playGeneration) return@launch
-            val failure = withContext(Dispatchers.IO) { client.probeStream(prepared.url) }
+            val shiftUrl = if (transcode) {
+                null
+            } else {
+                resolveEngine(refreshEngine)?.let { shift.openSession(it, channel.guideNumber) }
+            }
+            val shifted = if (shiftUrl == null) {
+                null
+            } else {
+                withContext(Dispatchers.IO) { runCatching { probeTimeshift(shiftUrl) }.getOrNull() }
+                    ?.takeIf { it.failure == null }
+            }
             if (generation != playGeneration) return@launch
+            val playUrl = if (shifted != null && shiftUrl != null) {
+                shift.begin(shiftUrl, shifted)
+                shift.localUrl
+            } else {
+                shift.stop()
+                val failure = withContext(Dispatchers.IO) { client.probeStream(prepared.url) }
+                if (generation != playGeneration) return@launch
+                if (failure != null) {
+                    if (prepared.tunerIndex != null && !autoRetried && failure.hdhrCode == 804) {
+                        autoRetried = true
+                        tune(device, channel, transcode = transcode, forceAuto = true)
+                        return@launch
+                    }
+                    showStreamFailure(failure)
+                    return@launch
+                }
+                prepared.url
+            }
             preferredTuner = prepared.tunerIndex
             localIp = prepared.localIp
             usingSpecificTuner = prepared.tunerIndex != null
-            if (failure != null) {
-                if (usingSpecificTuner && !autoRetried && failure.hdhrCode == 804) {
-                    autoRetried = true
-                    tune(device, channel, transcode = transcode, forceAuto = true)
-                    return@launch
-                }
-                val playback = playbackFailure(failure)
-                _ui.update {
-                    it.copy(
-                        playbackError = playback.message,
-                        offerTranscode = false,
-                        phase = PlaybackPhase.Idle,
-                    )
-                }
-                return@launch
+            val now = System.currentTimeMillis()
+            showClock = true
+            _ui.update {
+                it.copy(
+                    playbackClock = PlaybackClock(
+                        active = true,
+                        timeshift = shift.active,
+                        playing = true,
+                        bufferStartMs = if (shift.active) shift.bufferStartMs else now,
+                        positionMs = now,
+                        liveMs = now,
+                    ),
+                )
             }
-            engine.play(prepared.url)
+            ensureClock()
+            engine.play(playUrl)
             pollSignal(generation, device, channel)
         }
+    }
+
+    private suspend fun resolveEngine(refresh: Boolean): String? {
+        if (!refresh && engineOriginKnown) return engineOrigin
+        val found = withContext(Dispatchers.IO) {
+            runCatching { client.recordEngineOrigin() }.getOrNull()
+        }
+        engineOrigin = found
+        engineOriginKnown = true
+        return found
+    }
+
+    private fun showStreamFailure(failure: StreamFailure) {
+        val playback = playbackFailure(failure)
+        _ui.update {
+            it.copy(
+                playbackError = playback.message,
+                offerTranscode = false,
+                phase = PlaybackPhase.Idle,
+            )
+        }
+    }
+
+    private fun playingProgram() = (_ui.value.screen as? Screen.Watch)?.let { screen ->
+        _ui.value.guide?.airing(screen.channel.guideNumber, screen.channel.guideName, _ui.value.guideNowMs)
+    }
+
+    private fun canSeekWall(wallMs: Long): Boolean {
+        if (!shift.active) return false
+        val live = System.currentTimeMillis()
+        return if (wallMs >= live - 750L) shift.canSeek(live, true, live) else shift.canSeek(wallMs, false, live)
+    }
+
+    private fun performSeek(wallMs: Long) {
+        if (!shift.active) return
+        val live = System.currentTimeMillis()
+        if (wallMs >= live - 750L) seekShift(live, joinLive = true)
+        else seekShift(wallMs, joinLive = false)
+    }
+
+    private fun seekAvailableStart(liveMs: Long) {
+        val programStart = playingProgram()?.startEpochMs
+        if (!shift.canSeekAvailableStart(programStart, liveMs)) return
+        engine.expectRestart()
+        if (!shift.seekAvailableStart(programStart, liveMs)) return
+        skipLandedMs = availableRecordingStartMs(programStart, shift.bufferStartMs)
+        engine.play(shift.localUrl, keepPicture = true)
+    }
+
+    private fun seekShift(wallMs: Long, joinLive: Boolean) {
+        val live = System.currentTimeMillis()
+        if (!shift.canSeek(wallMs, joinLive, live)) return
+        engine.expectRestart()
+        if (!shift.seek(wallMs, joinLive, live)) return
+        skipLandedMs = if (joinLive) live else wallMs
+        engine.play(shift.localUrl, keepPicture = true)
+    }
+
+    /** Position to skip from. A seek that the clock has not published yet still counts. */
+    private fun skipOrigin(positionMs: Long): Long {
+        val landed = skipLandedMs ?: return positionMs
+        if (kotlin.math.abs(positionMs - landed) <= 2_000L) {
+            skipLandedMs = null
+            return positionMs
+        }
+        return landed
+    }
+
+    private fun ensureClock() {
+        if (clockJob?.isActive == true) return
+        clockJob = viewModelScope.launch {
+            while (isActive) {
+                publishClock()
+                delay(250)
+            }
+        }
+    }
+
+    private fun publishClock() {
+        if (!showClock || _ui.value.screen !is Screen.Watch) return
+        val now = System.currentTimeMillis()
+        val media = engine.transport.value
+        val clock = if (shift.active) {
+            val sample = shift.sample(media.mediaTimeMs, now)
+            PlaybackClock(
+                active = true,
+                timeshift = true,
+                playing = media.playing,
+                bufferStartMs = sample.bufferStartMs,
+                positionMs = sample.positionMs,
+                liveMs = sample.liveMs,
+            )
+        } else {
+            val freshStart = media.mediaTimeMs < 1_500L || _ui.value.phase == PlaybackPhase.Ready
+            if (!directOn && media.playing && freshStart) {
+                directOn = true
+                directMedia0 = media.mediaTimeMs
+                directWall0 = now - media.mediaTimeMs.coerceAtLeast(0L)
+            }
+            val position = if (directOn) {
+                directWall0 + (media.mediaTimeMs - directMedia0).coerceAtLeast(0L)
+            } else {
+                now
+            }
+            PlaybackClock(
+                active = true,
+                timeshift = false,
+                playing = media.playing,
+                bufferStartMs = if (directOn) directWall0 else now,
+                positionMs = position,
+                liveMs = now,
+            )
+        }
+        _ui.update { it.copy(playbackClock = clock) }
     }
 
     private fun pollSignal(generation: Int, device: HdhrDevice, channel: Channel) {
@@ -1345,6 +1630,16 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun cancelSkip() {
+        skipGeneration++
+        skipJob?.cancel()
+        skipJob = null
+        skipLandedMs = null
+        if (_ui.value.pendingSkip != null) {
+            _ui.update { it.copy(pendingSkip = null) }
+        }
+    }
+
     private fun rememberViewed(deviceId: String, guideNumber: String) {
         val current = _ui.value.recentChannels
         val next = rememberViewedChannel(current, guideNumber)
@@ -1354,10 +1649,17 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun stopPlayback() {
+        cancelSkip()
         playGeneration++
         playJob?.cancel()
         pollJob?.cancel()
+        clockJob?.cancel()
+        showClock = false
+        directOn = false
+        // Drop the player URL before the relay sockets close. A socket error
+        // after that is ignored, so leaving the channel does not show a false failure.
         engine.stop()
+        shift.stop()
         releaseWifi()
     }
 

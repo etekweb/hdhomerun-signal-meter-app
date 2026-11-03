@@ -55,6 +55,17 @@ class HdhrClient(context: Context) {
      * Recordings on every HDHomeRun record engine that answers discovery.
      * An empty library with [RecordingLibrary.enginesFound] of 0 means no DVR was found.
      */
+    /**
+     * Origin of one record engine on the LAN, such as `http://10.0.0.20:59090`.
+     * Null when no DVR storage answered. Live pause and seek stream from here.
+     */
+    fun recordEngineOrigin(): String? {
+        val hits = discoverStorage()
+        val engines = hits.mapNotNull { recordEngine(it) }
+        val engine = engines.minWithOrNull(compareBy<RecordEngine> { ipRank(it.host) }) ?: return null
+        return recordEngineOrigin(engine.storageUrl)
+    }
+
     fun loadRecordings(nowEpochMs: Long = System.currentTimeMillis()): RecordingLibrary {
         val hits = discoverStorage()
         val engines = hits.mapNotNull { recordEngine(it) }
