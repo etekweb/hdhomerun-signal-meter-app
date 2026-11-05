@@ -47,6 +47,7 @@ import net.etekweb.hdhrmeter.player.RecordingPlay
 import net.etekweb.hdhrmeter.player.VideoStats
 import net.etekweb.hdhrmeter.player.accumulateSkip
 import net.etekweb.hdhrmeter.player.availableRecordingStartMs
+import net.etekweb.hdhrmeter.player.settleSkipLanding
 import net.etekweb.hdhrmeter.player.playbackFailure
 import org.videolan.libvlc.util.VLCVideoLayout
 import kotlinx.coroutines.Dispatchers
@@ -286,7 +287,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private var playGeneration = 0
     private var hopGeneration = 0
     private var skipGeneration = 0
-    /** Picture position of the last seek, until the clock reports it. */
+    /** Last seek, until a clock sample shows that picture. Cleared in [publishClock]. */
     private var skipLandedMs: Long? = null
     private var tunerGeneration = 0
     private var probeGeneration = 0
@@ -2113,14 +2114,15 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         engine.play(shift.localUrl, keepPicture = true)
     }
 
-    /** Position to skip from. A seek that the clock has not published yet still counts. */
+    /**
+     * Position to skip from. A seek the clock has not published yet still counts.
+     * [publishClock] clears that landing once the playhead shows it, so watching
+     * past it does not drag the next skip back there.
+     */
     private fun skipOrigin(positionMs: Long): Long {
-        val landed = skipLandedMs ?: return positionMs
-        if (kotlin.math.abs(positionMs - landed) <= 2_000L) {
-            skipLandedMs = null
-            return positionMs
-        }
-        return landed
+        val landed = settleSkipLanding(positionMs, skipLandedMs)
+        skipLandedMs = landed
+        return landed ?: positionMs
     }
 
     private fun ensureClock() {
@@ -2143,7 +2145,10 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         val now = System.currentTimeMillis()
         val media = engine.transport.value
         val clock = if (shift.active) {
-            val sample = shift.sample(media.mediaTimeMs, now)
+            val sample = shift.sample(media.mediaTimeMs, now, media.playing)
+            // Drop the remembered seek once this sample is showing it. A later
+            // skip then starts from the playhead, not from that landing.
+            skipLandedMs = settleSkipLanding(sample.positionMs, skipLandedMs)
             PlaybackClock(
                 active = true,
                 timeshift = true,
@@ -2320,13 +2325,16 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun publishRecordingClock() {
         if (!showClock || _ui.value.screen !is Screen.PlayRecording || !recordingPlay.active) return
-        val sample = recordingPlay.sample(engine.transport.value.mediaTimeMs)
+        val now = System.currentTimeMillis()
+        val media = engine.transport.value
+        val sample = recordingPlay.sample(media.mediaTimeMs, now, media.playing)
+        skipLandedMs = settleSkipLanding(sample.positionMs, skipLandedMs)
         _ui.update {
             it.copy(
                 playbackClock = PlaybackClock(
                     active = true,
                     timeshift = recordingPlay.seekable,
-                    playing = engine.transport.value.playing,
+                    playing = media.playing,
                     bufferStartMs = sample.startMs,
                     positionMs = sample.positionMs,
                     liveMs = sample.endMs,

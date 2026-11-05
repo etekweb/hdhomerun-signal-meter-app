@@ -42,6 +42,31 @@ class PlaybackSkipTest {
     }
 
     @Test
+    fun theLandingStaysUntilThePlayheadShowsIt() {
+        assertEquals(90_000L, settleSkipLanding(positionMs = 40_000L, landedMs = 90_000L))
+        assertNull(settleSkipLanding(positionMs = 90_400L, landedMs = 90_000L))
+        assertNull(settleSkipLanding(positionMs = 88_500L, landedMs = 90_000L))
+    }
+
+    @Test
+    fun watchingPastAPublishedLandingSkipsFromThePlayhead() {
+        var landed: Long? = 50_000L
+        // The seek is in flight. The playhead is still the old picture, so the
+        // next tap keeps counting from the landing.
+        landed = settleSkipLanding(positionMs = 20_000L, landedMs = landed)
+        val early = accumulateSkip(null, landed ?: 20_000L, SKIP_STEP_MS, 0L, 200_000L)
+        assertEquals(60_000L, early?.targetMs)
+
+        // The clock shows the landing, then the viewer watches on past it.
+        landed = settleSkipLanding(positionMs = 50_200L, landedMs = landed)
+        assertNull(landed)
+        val forward = accumulateSkip(null, 80_000L, SKIP_STEP_MS, 0L, 200_000L)
+        assertEquals(90_000L, forward?.targetMs)
+        val backward = accumulateSkip(null, 80_000L, -SKIP_STEP_MS, 0L, 200_000L)
+        assertEquals(70_000L, backward?.targetMs)
+    }
+
+    @Test
     fun formatSkipDeltaUsesSecondsThenMinutes() {
         assertEquals("\u221210s", formatSkipDelta(-10_000))
         assertEquals("+20s", formatSkipDelta(20_000))

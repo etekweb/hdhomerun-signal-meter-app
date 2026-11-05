@@ -53,7 +53,7 @@ class PlaybackShift : Closeable {
         relay.close()
     }
 
-    fun sample(mediaTimeMs: Long, nowMs: Long): ShiftSample {
+    fun sample(mediaTimeMs: Long, nowMs: Long, advancing: Boolean = true): ShiftSample {
         val snap = relay.snapshot.value
         if (snap.opened && snap.generation != applied) {
             applied = snap.generation
@@ -65,10 +65,10 @@ class PlaybackShift : Closeable {
                 generation = snap.generation,
             )
         }
-        if (snap.opened) map.noteBytes(snap.bytesSent, mediaTimeMs, nowMs)
+        if (snap.opened) map.noteBytes(snap.bytesSent, mediaTimeMs, nowMs, advancing)
         return ShiftSample(
             bufferStartMs = map.bufferStartMs,
-            positionMs = map.positionMs(mediaTimeMs, nowMs),
+            positionMs = map.positionMs(mediaTimeMs, nowMs, advancing),
             liveMs = nowMs,
         )
     }

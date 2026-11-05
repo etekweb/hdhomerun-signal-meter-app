@@ -21,6 +21,7 @@ internal class RecordingPlay : Closeable {
     private var hold = false
     private var holdGeneration = -1
     private var holdWall = 0L
+    private val picture = PictureClock()
 
     val localUrl: String get() = relay.localUrl
     val active: Boolean get() = upstream != null
@@ -52,17 +53,22 @@ internal class RecordingPlay : Closeable {
         relay.close()
     }
 
-    fun sample(mediaTimeMs: Long): RecordingSample {
+    fun sample(mediaTimeMs: Long, nowMs: Long, advancing: Boolean): RecordingSample {
         val snap = relay.snapshot.value
+        val media = mediaTimeMs.coerceAtLeast(0L)
         if (hold) {
-            val restarted = snap.opened &&
-                snap.generation == holdGeneration &&
-                mediaTimeMs in 0L..1_200L
-            if (!restarted) return placed(holdWall)
+            val openedThis = snap.opened && snap.generation == holdGeneration
+            val fresh = media in 0L..FRESH_MEDIA_MS
+            val timedOut = openedThis && snap.openedAtMs > 0L && nowMs >= snap.openedAtMs + STREAM_HOLD_MS
+            if (!(openedThis && (fresh || timedOut))) return placed(holdWall)
             hold = false
+            picture.start(nowMs, media, adoptMedia = fresh)
+            val origin = if (snap.opened) snap.requestedWallMs else holdWall
+            return placed(origin + picture.elapsedMs)
         }
+        val elapsed = picture.advance(nowMs, media, advancing)
         val origin = if (snap.opened) snap.requestedWallMs else span.startMs
-        return placed(origin + mediaTimeMs.coerceAtLeast(0L))
+        return placed(origin + elapsed)
     }
 
     /** Lands on [wallMs]. Returns the clamped clock time, or null when this file cannot be seeked. */

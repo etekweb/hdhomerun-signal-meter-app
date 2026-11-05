@@ -67,7 +67,8 @@ class PlaybackEngine(context: Context) {
         Thread(runnable, "hdhr-playback").apply { isDaemon = true }
     }
     private val commandGeneration = AtomicInteger(0)
-    private val startForce = AtomicInteger(0)
+    /** Each play() bumps this. An older queued start must not swallow the latest seek. */
+    private val startSerial = AtomicInteger(0)
 
     @Volatile private var wantPlaying = true
     @Volatile private var pendingUrl: String? = null
@@ -103,7 +104,7 @@ class PlaybackEngine(context: Context) {
         }
         pendingUrl = url
         wantPlaying = true
-        startForce.incrementAndGet()
+        val serial = startSerial.incrementAndGet()
         // A seek closes the current HTTP socket. That looks like a playback failure
         // until the replacement stream is open. A fresh tune reports real failures.
         ignoreErrorUntilElapsed = if (keepPicture) SystemClock.elapsedRealtime() + 1_500 else 0L
@@ -116,7 +117,7 @@ class PlaybackEngine(context: Context) {
         _phase.value = EnginePhase.Buffering
         _transport.update { it.copy(playing = true) }
         runCatching { mediaPlayer.volume = 100 }
-        enqueueStart()
+        enqueueStart(serial, force = true)
     }
 
     /** The next socket close is a seek or a channel change, not a failure. */
@@ -155,7 +156,7 @@ class PlaybackEngine(context: Context) {
             mediaPlayer.attachViews(layout, null, false, true)
             mediaPlayer.videoScale = MediaPlayer.ScaleType.SURFACE_BEST_FIT
             attachedLayout = layout
-            enqueueStart()
+            enqueueStart(startSerial.get(), force = false)
         } catch (error: RuntimeException) {
             Log.e(TAG, "Could not attach the video surface", error)
             attachedLayout = null
@@ -173,7 +174,7 @@ class PlaybackEngine(context: Context) {
         pendingUrl = null
         playingUrl = null
         wantPlaying = false
-        startForce.set(0)
+        startSerial.incrementAndGet()
         // Drop the surface on this thread, before the slow input shutdown, so
         // disposing the picture does not wait on the tuner socket.
         detachInternal()
@@ -199,6 +200,7 @@ class PlaybackEngine(context: Context) {
     fun release() {
         pendingUrl = null
         playingUrl = null
+        startSerial.incrementAndGet()
         commandGeneration.incrementAndGet()
         commands.execute {
             val mediaPlayer = player
@@ -224,25 +226,25 @@ class PlaybackEngine(context: Context) {
         return library to MediaPlayer(library)
     }
 
-    private fun enqueueStart() {
+    private fun enqueueStart(serial: Int, force: Boolean) {
         val generation = commandGeneration.get()
         val mediaPlayer = player ?: return
         commands.execute {
             if (generation != commandGeneration.get()) return@execute
-            startLocked(mediaPlayer, generation)
+            if (serial != startSerial.get()) return@execute
+            startLocked(mediaPlayer, generation, serial, force)
         }
     }
 
-    private fun startLocked(mediaPlayer: MediaPlayer, generation: Int) {
+    private fun startLocked(mediaPlayer: MediaPlayer, generation: Int, serial: Int, force: Boolean) {
         val library = lib ?: return
         val url = pendingUrl ?: return
         if (attachedLayout == null) return
-        if (generation != commandGeneration.get()) return
-        val force = startForce.getAndSet(0) > 0
+        if (generation != commandGeneration.get() || serial != startSerial.get()) return
         if (!force && playingUrl == url && mediaPlayer.isPlaying && wantPlaying) return
         ignoreNextStop = true
         mediaPlayer.stop()
-        if (generation != commandGeneration.get()) return
+        if (generation != commandGeneration.get() || serial != startSerial.get()) return
         runCatching { mediaPlayer.volume = 100 }
         val media = Media(library, Uri.parse(url))
         media.addOption(":http-user-agent=HDHomeRunSignalMeter")

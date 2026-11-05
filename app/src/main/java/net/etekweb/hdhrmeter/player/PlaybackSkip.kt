@@ -6,6 +6,13 @@ import java.util.Locale
 const val SKIP_STEP_MS = 10_000L
 
 /**
+ * Once the playhead is this close to a seek, that seek is on screen.
+ * The next skip then starts from the playhead. Until then it starts from the
+ * landing, because the playhead is still showing the previous picture.
+ */
+const val SKIP_LANDING_WINDOW_MS = 2_000L
+
+/**
  * A burst of skip taps that has not been applied yet.
  * [anchorMs] is the picture position when the burst started, so later taps
  * add onto the same spot while playback continues.
@@ -37,6 +44,19 @@ fun accumulateSkip(
     val shown = target - anchor
     if (shown == 0L) return null
     return PendingSkip(anchor, shown)
+}
+
+/**
+ * Forgets [landedMs] once [positionMs] is showing it.
+ * A far playhead is not proof the landing is stale: right after a seek the
+ * playhead is still the old picture, and another tap has to keep counting
+ * from the landing. The clock calls this when it publishes the landing, so a
+ * later tap is not sent back there after the viewer has been watching.
+ */
+fun settleSkipLanding(positionMs: Long, landedMs: Long?): Long? {
+    val landed = landedMs ?: return null
+    if (kotlin.math.abs(positionMs - landed) <= SKIP_LANDING_WINDOW_MS) return null
+    return landed
 }
 
 /** Signed skip amount, such as "−30s" or "+1:30". */

@@ -130,5 +130,106 @@ class PlaybackTimelineTest {
         )
         assertEquals(20_000L, map.positionMs(mediaTimeMs = 50_000L, nowMs = 21_000L))
         assertEquals(20_900L, map.positionMs(mediaTimeMs = 400L, nowMs = 21_000L))
+        assertEquals(21_200L, map.positionMs(mediaTimeMs = 700L, nowMs = 21_300L))
+    }
+
+    @Test
+    fun aStuckMediaClockReleasesTheSeekHoldAndThenFollowsThePicture() {
+        val map = TimeshiftMap()
+        map.noteEdges(oldestByte = 0L, liveByte = 1_000_000L, nowMs = 20_000L)
+        map.armHold(wallMs = 50_000L, generation = 2)
+        map.noteOpened(
+            actualByte = 2_000_000L,
+            joinLive = false,
+            requestedWallMs = 50_000L,
+            openedAtMs = 50_000L,
+            generation = 2,
+        )
+        assertEquals(50_000L, map.positionMs(mediaTimeMs = 80_000L, nowMs = 50_500L))
+        assertEquals(50_000L, map.positionMs(mediaTimeMs = 80_000L, nowMs = 52_500L))
+        assertEquals(53_000L, map.positionMs(mediaTimeMs = 80_000L, nowMs = 55_500L, advancing = true))
+        assertEquals(53_000L, map.positionMs(mediaTimeMs = 80_000L, nowMs = 58_500L, advancing = false))
+    }
+
+    @Test
+    fun aMediaClockStuckAtZeroStillFollowsThePicture() {
+        val map = TimeshiftMap()
+        map.noteEdges(oldestByte = 0L, liveByte = 1_000_000L, nowMs = 10_000L)
+        map.noteOpened(
+            actualByte = 1_000_000L,
+            joinLive = true,
+            requestedWallMs = 10_000L,
+            openedAtMs = 10_000L,
+            generation = 1,
+        )
+        assertEquals(10_000L, map.positionMs(mediaTimeMs = 0L, nowMs = 10_000L, advancing = true))
+        assertEquals(18_000L, map.positionMs(mediaTimeMs = 0L, nowMs = 18_000L, advancing = true))
+    }
+
+    @Test
+    fun mediaTimeThatStallsInTheMeasurementGapStillLocksARate() {
+        val map = TimeshiftMap()
+        map.noteEdges(oldestByte = 0L, liveByte = 1_000_000L, nowMs = 10_000L)
+        map.noteOpened(
+            actualByte = 1_000_000L,
+            joinLive = true,
+            requestedWallMs = 10_000L,
+            openedAtMs = 10_000L,
+            generation = 1,
+        )
+        map.noteBytes(bytesSent = 50_000L, mediaTimeMs = 0L, nowMs = 10_000L)
+        map.noteBytes(bytesSent = 60_000L, mediaTimeMs = 0L, nowMs = 12_500L)
+        map.noteBytes(bytesSent = 1_060_000L, mediaTimeMs = 1_500L, nowMs = 16_000L)
+        assertTrue(map.bytesPerMs >= MIN_PLAYABLE_RATE)
+        assertTrue(map.shiftTarget(12_000L, joinLive = false, liveMs = 20_000L) != null)
+    }
+
+    @Test
+    fun watchingThenSkippingForwardDoesNotReturnToTheOpenByte() {
+        val map = TimeshiftMap()
+        val openedAt = 20_000L
+        map.noteEdges(oldestByte = 0L, liveByte = 1_000_000L, nowMs = openedAt)
+        map.noteOpened(
+            actualByte = 1_000_000L,
+            joinLive = true,
+            requestedWallMs = openedAt,
+            openedAtMs = openedAt,
+            generation = 1,
+        )
+        // Startup sample is far below the real 1,000 bytes/ms.
+        map.noteBytes(bytesSent = 50_000L, mediaTimeMs = 100L, nowMs = openedAt + 100L)
+        map.noteBytes(bytesSent = 200_000L, mediaTimeMs = 2_000L, nowMs = openedAt + 2_000L)
+        map.noteBytes(bytesSent = 400_000L, mediaTimeMs = 4_000L, nowMs = openedAt + 4_000L)
+        assertEquals(100.0, map.bytesPerMs, 1.0)
+
+        var now = openedAt + 4_000L
+        var bytes = 400_000L
+        var media = 0L
+        map.positionMs(mediaTimeMs = media, nowMs = now, advancing = true)
+        repeat(20) {
+            now += 1_000L
+            media += 1_000L
+            bytes += 1_000_000L
+            map.positionMs(mediaTimeMs = media, nowMs = now, advancing = true)
+            map.noteBytes(bytesSent = bytes, mediaTimeMs = media, nowMs = now, advancing = true)
+        }
+        val position = map.positionMs(mediaTimeMs = media, nowMs = now, advancing = true)
+        assertEquals(openedAt + 20_000L, position)
+        assertTrue(map.bytesPerMs > 500.0)
+
+        val here = rangeByte(map.shiftTarget(position, joinLive = false, liveMs = position + 120_000L))
+        val ahead = rangeByte(map.shiftTarget(position + 10_000L, joinLive = false, liveMs = position + 120_000L))
+        assertTrue(here > 1_000_000L + 10_000_000L)
+        assertTrue(ahead > here)
+        assertTrue(ahead - here > 5_000_000L)
+    }
+
+    private fun rangeByte(target: ShiftTarget?): Long {
+        return target?.range?.removePrefix("bytes=")?.removeSuffix("-")?.toLong()
+            ?: error("missing seek")
+    }
+
+    private companion object {
+        const val MIN_PLAYABLE_RATE = 10.0
     }
 }
