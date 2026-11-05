@@ -343,6 +343,35 @@ class ProtocolTest {
     }
 
     @Test
+    fun selectTunerFollowsTheChannelWhenThePreferredTunerIsStillIdle() {
+        val playing = tuner(0, "8.1", "10.0.0.4")
+        val spare = tuner(1, null, null)
+        assertEquals(
+            0,
+            selectTuner(listOf(playing, spare), "8.1", "192.168.1.20", preferredIndex = 1)?.index,
+        )
+
+        val byFrequency = tuner(0, null, "10.0.0.4", frequencyHz = 177_000_000L)
+        assertEquals(
+            0,
+            selectTuner(
+                listOf(byFrequency, spare),
+                "8.1",
+                "192.168.1.20",
+                preferredIndex = 1,
+                frequencyHz = 177_000_000L,
+            )?.index,
+        )
+    }
+
+    @Test
+    fun selectTunerKeepsOurTunerWhileItIsLocking() {
+        val other = tuner(0, "7.1", "10.0.0.5")
+        val ours = tuner(1, null, "192.168.1.20")
+        assertEquals(1, selectTuner(listOf(other, ours), "7.1", "192.168.1.20", preferredIndex = 1)?.index)
+    }
+
+    @Test
     fun hostNormalization() {
         assertEquals("192.168.1.20", normalizeHostInput("  http://192.168.1.20/lineup.json "))
         assertEquals(
@@ -355,12 +384,12 @@ class ProtocolTest {
         assertTrue(compareGuideNumbers("2.10", "10.1") < 0)
     }
 
-    private fun tuner(index: Int, vct: String?, target: String?) = TunerJson(
+    private fun tuner(index: Int, vct: String?, target: String?, frequencyHz: Long? = null) = TunerJson(
         resource = "tuner$index",
         index = index,
         vctNumber = vct,
         vctName = null,
-        frequencyHz = null,
+        frequencyHz = frequencyHz,
         strengthPercent = null,
         qualityPercent = null,
         symbolPercent = null,

@@ -710,14 +710,20 @@ internal fun sameChannel(guideNumber: String, vctNumber: String?): Boolean {
 }
 
 /**
- * Picks the tuner row that belongs to this playback. A preferred index is only
- * trusted while it is still locking, already on this channel, or aimed at us.
+ * Picks the tuner row that belongs to this playback.
+ *
+ * A preferred index is trusted when it is already on this channel or aimed at
+ * this phone. An idle preferred index is only a tuner that was still locking.
+ * It must not win over a tuner already on the channel: after a channel change
+ * the spare noted while the previous stream was up stays idle, and the record
+ * engine (or `/auto/`) is playing on another tuner.
  */
 internal fun selectTuner(
     tuners: List<TunerJson>,
     guideNumber: String,
     localIp: String?,
     preferredIndex: Int?,
+    frequencyHz: Long? = null,
 ): TunerJson? {
     if (tuners.isEmpty()) return null
     val ours = if (localIp.isNullOrBlank()) {
@@ -725,23 +731,32 @@ internal fun selectTuner(
     } else {
         tuners.filter { targetHost(it.targetIp) == localIp }
     }
-    ours.firstOrNull { sameChannel(guideNumber, it.vctNumber) }?.let { return it }
-    if (preferredIndex != null) {
-        val preferred = tuners.firstOrNull { it.index == preferredIndex }
-        if (preferred != null && tunerBelongsToPlayback(preferred, guideNumber, localIp)) {
-            return preferred
-        }
-    }
-    val matched = tuners.filter { sameChannel(guideNumber, it.vctNumber) }
+    ours.firstOrNull { onRequestedChannel(it, guideNumber, frequencyHz) }?.let { return it }
+    val matched = tuners.filter { onRequestedChannel(it, guideNumber, frequencyHz) }
+    val preferred = preferredIndex?.let { index -> tuners.firstOrNull { it.index == index } }
+    if (preferred != null && matched.any { it.index == preferred.index }) return preferred
+    if (preferred != null && aimedAtUs(preferred, localIp)) return preferred
     if (matched.size == 1) return matched.first()
+    if (preferred != null && matched.isEmpty() && isUntuned(preferred)) return preferred
     return ours.firstOrNull()
 }
 
-private fun tunerBelongsToPlayback(tuner: TunerJson, guideNumber: String, localIp: String?): Boolean {
-    val target = targetHost(tuner.targetIp)
-    if (!localIp.isNullOrBlank() && target == localIp) return true
-    if (sameChannel(guideNumber, tuner.vctNumber) && (target == null || target == localIp)) return true
-    return tuner.vctNumber.isNullOrBlank() && target == null
+/** Virtual channel, or the same RF frequency when the virtual number is not published yet. */
+private fun onRequestedChannel(tuner: TunerJson, guideNumber: String, frequencyHz: Long?): Boolean {
+    if (sameChannel(guideNumber, tuner.vctNumber)) return true
+    val want = frequencyHz ?: return false
+    val got = tuner.frequencyHz ?: return false
+    if (want <= 0L || got <= 0L) return false
+    return kotlin.math.abs(want - got) <= 2_000_000L
+}
+
+private fun aimedAtUs(tuner: TunerJson, localIp: String?): Boolean {
+    if (localIp.isNullOrBlank()) return false
+    return targetHost(tuner.targetIp) == localIp
+}
+
+private fun isUntuned(tuner: TunerJson): Boolean {
+    return tuner.vctNumber.isNullOrBlank() && targetHost(tuner.targetIp) == null
 }
 
 private fun stripBom(text: String): String = text.trim().removePrefix("\uFEFF")

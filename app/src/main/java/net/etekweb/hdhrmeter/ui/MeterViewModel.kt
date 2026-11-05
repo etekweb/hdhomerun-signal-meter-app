@@ -30,6 +30,7 @@ import net.etekweb.hdhrmeter.data.rememberTuner
 import net.etekweb.hdhrmeter.data.sameTuner
 import net.etekweb.hdhrmeter.data.mergeSignal
 import net.etekweb.hdhrmeter.data.rewriteStreamUrl
+import net.etekweb.hdhrmeter.data.sameChannel
 import net.etekweb.hdhrmeter.data.selectTuner
 import net.etekweb.hdhrmeter.data.DeviceStatus
 import net.etekweb.hdhrmeter.data.TunerStation
@@ -2035,9 +2036,13 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 prepared.url
             }
-            preferredTuner = prepared.tunerIndex
+            // The record engine chooses its own tuner. The idle index captured
+            // while the previous stream was still up is a spare, and polling it
+            // stays at zero for the rest of the session.
+            val engineOwnsTuner = shifted != null && shiftUrl != null
+            preferredTuner = if (engineOwnsTuner) null else prepared.tunerIndex
             localIp = prepared.localIp
-            usingSpecificTuner = prepared.tunerIndex != null
+            usingSpecificTuner = prepared.tunerIndex != null && !engineOwnsTuner
             val now = System.currentTimeMillis()
             showClock = true
             _ui.update {
@@ -2213,12 +2218,26 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun readSignal(device: HdhrDevice, channel: Channel): SignalReading? {
         val tuners = client.status(device)
-        val chosen = selectTuner(tuners, channel.guideNumber, localIp, preferredTuner)
-        val index = chosen?.index ?: preferredTuner
-        if (chosen == null && index == null) return null
-        val text = index?.let { client.tunerText(device, it) }
+        val chosen = selectTuner(
+            tuners,
+            channel.guideNumber,
+            localIp,
+            preferredTuner,
+            channel.frequencyHz,
+        )
+        val channelTaken = tuners.any { sameChannel(channel.guideNumber, it.vctNumber) }
+        val index = when {
+            chosen?.index != null -> chosen.index
+            preferredTuner == null -> null
+            channelTaken -> null
+            else -> preferredTuner
+        }
+        if (index == null) return null
+        val text = client.tunerText(device, index)
         if (chosen == null && text == null) return null
-        return mergeSignal(chosen, text, channel.frequencyHz)
+        val reading = mergeSignal(chosen, text, channel.frequencyHz)
+        if (reading.locked) preferredTuner = chosen?.index ?: index
+        return reading
     }
 
     private fun cancelChannelHop() {
