@@ -28,18 +28,28 @@ internal class RecordingPlay : Closeable {
     val seekable: Boolean get() = active && span.seekable
     val startMs: Long get() = span.startMs
 
-    fun begin(url: String, window: RecordingSpan, range: String?) {
+    /**
+     * Opens [url] at [startWallMs].
+     * A finished file with a later wall opens on the matching byte. Anything else starts at the beginning.
+     */
+    fun begin(url: String, window: RecordingSpan, range: String?, startWallMs: Long = window.startMs) {
         upstream = url
         span = window
+        val wall = if (window.seekable) startWallMs.coerceIn(window.startMs, window.endMs) else window.startMs
+        val openRange = if (window.seekable && wall > window.startMs) {
+            "bytes=${window.byteAt(wall)}-"
+        } else {
+            range?.takeIf { it.isNotBlank() }.orEmpty()
+        }
         val generation = relay.arm(
             url,
-            range?.takeIf { it.isNotBlank() }.orEmpty(),
+            openRange,
             joinLive = false,
-            requestedWallMs = window.startMs,
+            requestedWallMs = wall,
         )
         hold = true
         holdGeneration = generation
-        holdWall = window.startMs
+        holdWall = wall
     }
 
     fun stop() {

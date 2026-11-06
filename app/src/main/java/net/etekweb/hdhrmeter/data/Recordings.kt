@@ -31,6 +31,11 @@ data class Recording(
     val programId: String? = null,
     /** POST target that deletes this file. Null when the engine did not offer one. */
     val cmdUrl: String? = null,
+    /**
+     * Saved playback offset in seconds.
+     * Null when the engine omitted it. [RECORDING_RESUME_WATCHED] means it was watched to the end.
+     */
+    val resumeSec: Long? = null,
 )
 
 /** Free and total bytes from record-engine discover.json. */
@@ -329,7 +334,55 @@ private fun recordingFrom(
         playUrl = item.optText("PlayURL")?.takeIf { it.startsWith("http://") || it.startsWith("https://") },
         programId = programId,
         cmdUrl = item.optText("CmdURL")?.takeIf { it.startsWith("http://") || it.startsWith("https://") },
+        resumeSec = item.optResume("Resume"),
     )
+}
+
+/** Engine value that means the recording was watched to the end. */
+internal const val RECORDING_RESUME_WATCHED = 4_294_967_295L
+
+/** Mid-file offset in seconds. The start, a missing value, and a finished watch are not resume points. */
+internal fun recordingResumeOffset(resumeSec: Long?): Long? {
+    val seconds = resumeSec ?: return null
+    if (seconds <= 0L || seconds >= RECORDING_RESUME_WATCHED) return null
+    return seconds
+}
+
+/**
+ * True when the recording detail can offer Resume.
+ * A file that is still being written cannot be seeked, so it keeps Play from Start.
+ */
+internal fun recordingCanResume(recording: Recording): Boolean {
+    if (recording.playUrl.isNullOrBlank() || recording.stillRecording) return false
+    val seconds = recordingResumeOffset(recording.resumeSec) ?: return false
+    val start = recording.recordStartEpochMs ?: recording.startEpochMs ?: return false
+    val end = recording.recordEndEpochMs ?: recording.endEpochMs ?: return false
+    val durationMs = end - start
+    if (durationMs <= 1_000L) return false
+    return seconds * 1_000L < durationMs
+}
+
+/** Wall time for a finished file's resume point. Null plays from the start of [span]. */
+internal fun recordingResumeWall(recording: Recording, span: RecordingSpan): Long? {
+    if (!span.seekable || !recordingCanResume(recording)) return null
+    val seconds = recordingResumeOffset(recording.resumeSec) ?: return null
+    val wall = span.startMs + seconds * 1_000L
+    if (wall <= span.startMs || wall >= span.endMs) return null
+    return wall
+}
+
+/**
+ * Resume value to store when playback closes.
+ * [durationMs] is the finished file length. Reaching that end is stored as watched.
+ * A growing file passes null and keeps the elapsed seconds.
+ */
+internal fun recordingResumeToStore(offsetMs: Long, durationMs: Long?): Long {
+    if (offsetMs <= 0L) return 0L
+    if (durationMs != null && durationMs > 0L && offsetMs >= durationMs) return RECORDING_RESUME_WATCHED
+    val seconds = offsetMs / 1_000L
+    if (seconds <= 0L) return 0L
+    if (seconds >= RECORDING_RESUME_WATCHED) return RECORDING_RESUME_WATCHED
+    return seconds
 }
 
 /** Point a recording PlayURL at the engine host that answered discovery. */
@@ -421,6 +474,23 @@ private fun longFromWhole(value: Double): Long? {
     val whole = value.toLong()
     if (whole.toDouble() != value) return null
     return whole
+}
+
+/** Non-negative Resume seconds. Fractional values are dropped. */
+private fun JSONObject.optResume(key: String): Long? {
+    if (!has(key) || isNull(key)) return null
+    val seconds = when (val value = opt(key)) {
+        null -> return null
+        is Long -> value
+        is Int -> value.toLong()
+        is Short -> value.toLong()
+        is Byte -> value.toLong()
+        is String -> value.trim().toLongOrNull() ?: return null
+        is Number -> longFromWhole(value.toDouble()) ?: return null
+        else -> return null
+    }
+    if (seconds < 0L) return null
+    return seconds
 }
 
 private fun JSONObject.optText(key: String): String? {

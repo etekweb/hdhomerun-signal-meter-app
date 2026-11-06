@@ -110,6 +110,75 @@ class RecordingsTest {
     }
 
     @Test
+    fun resumeSecondsComeFromTheEpisode() {
+        val body = """
+            [{"Title":"News","PlayURL":"http://dvr.local/rec","RecordStartTime":1700000000,"RecordEndTime":1700003600,
+              "Resume":682},
+             {"Title":"Done","PlayURL":"http://dvr.local/done","RecordStartTime":1700000000,"RecordEndTime":1700003600,
+              "Resume":4294967295},
+             {"Title":"New","PlayURL":"http://dvr.local/new","RecordStartTime":1700000000,"RecordEndTime":1700003600}]
+        """.trimIndent()
+        val recordings = parseRecordingIndex(body, nowMs, null).recordings
+        val started = recordings.first { it.title == "News" }
+        assertEquals(682L, started.resumeSec)
+        assertTrue(recordingCanResume(started))
+        val watched = recordings.first { it.title == "Done" }
+        assertEquals(RECORDING_RESUME_WATCHED, watched.resumeSec)
+        assertFalse(recordingCanResume(watched))
+        val fresh = recordings.first { it.title == "New" }
+        assertNull(fresh.resumeSec)
+        assertFalse(recordingCanResume(fresh))
+        assertNull(recordingResumeOffset(0L))
+        assertEquals(682L, recordingResumeOffset("682".toLong()))
+    }
+
+    @Test
+    fun aGrowingFileDoesNotOfferResume() {
+        val body = """
+            [{"Title":"News","PlayURL":"http://dvr.local/rec","RecordStartTime":1799999900,"RecordEndTime":1800000100,"Resume":90}]
+        """.trimIndent()
+        val recording = parseRecordingIndex(body, nowMs, null).recordings.single()
+        assertTrue(recording.stillRecording)
+        assertFalse(recordingCanResume(recording))
+    }
+
+    @Test
+    fun closingStoresSecondsAndMarksTheEndWatched() {
+        assertEquals(0L, recordingResumeToStore(0L, 3_600_000L))
+        assertEquals(0L, recordingResumeToStore(900L, 3_600_000L))
+        assertEquals(90L, recordingResumeToStore(90_400L, 3_600_000L))
+        assertEquals(RECORDING_RESUME_WATCHED, recordingResumeToStore(3_600_000L, 3_600_000L))
+        assertEquals(120L, recordingResumeToStore(120_000L, null))
+    }
+
+    @Test
+    fun resumeWallLandsInsideAFinishedFile() {
+        val finished = Recording(
+            id = "1",
+            title = "News",
+            episodeTitle = null,
+            episodeNumber = null,
+            synopsis = null,
+            channelNumber = "4.1",
+            channelName = null,
+            startEpochMs = 1_700_000_000_000L,
+            endEpochMs = 1_700_003_600_000L,
+            recordStartEpochMs = 1_700_000_000_000L,
+            recordEndEpochMs = 1_700_003_600_000L,
+            originalAirdateEpochSec = null,
+            stillRecording = false,
+            problem = null,
+            sourceName = null,
+            playUrl = "http://10.0.0.9/rec",
+            resumeSec = 1_800L,
+        )
+        val span = recordingSpan(finished, nowMs, 3_600_000L)
+        assertEquals(span.startMs + 1_800_000L, recordingResumeWall(finished, span))
+        assertNull(recordingResumeWall(finished.copy(resumeSec = null), span))
+        assertNull(recordingResumeWall(finished.copy(stillRecording = true), span))
+    }
+
+    @Test
     fun spanUsesTheFinishedFileAndRefusesAGrowingOne() {
         val finished = Recording(
             id = "1",

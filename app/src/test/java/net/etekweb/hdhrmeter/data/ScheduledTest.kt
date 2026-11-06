@@ -132,6 +132,17 @@ class ScheduledTest {
         )
         assertNull(recordingDeleteUrl("ftp://10.0.0.9/a"))
         assertNull(recordingDeleteUrl("http://10.0.0.9/a b"))
+        assertEquals(
+            "http://10.0.0.9/a?FileID=1&cmd=set&Resume=682",
+            recordingResumeUrl("http://10.0.0.9/a?FileID=1", 682L),
+        )
+        assertEquals(
+            "http://10.0.0.9/a?cmd=set&Resume=4294967295",
+            recordingResumeUrl("http://10.0.0.9/a", RECORDING_RESUME_WATCHED),
+        )
+        assertNull(recordingResumeUrl("ftp://10.0.0.9/a", 1L))
+        assertNull(recordingResumeUrl("http://10.0.0.9/a b", 1L))
+        assertNull(recordingResumeUrl("http://10.0.0.9/a", -1L))
     }
 
     private fun catalog(): String {

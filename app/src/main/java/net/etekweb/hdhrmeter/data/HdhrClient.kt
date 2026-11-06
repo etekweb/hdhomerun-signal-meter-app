@@ -282,6 +282,20 @@ class HdhrClient(context: Context) {
         )
     }
 
+    /** Stores where playback of one file stopped. [resumeSec] is seconds, or the watched sentinel. */
+    fun setRecordingResume(cmdUrl: String, resumeSec: Long) {
+        val url = recordingResumeUrl(cmdUrl, resumeSec)
+            ?: throw HdhrException("This recording cannot store a resume point.")
+        val response = try {
+            http(url, method = "POST", connectMs = 8_000, readMs = 15_000)
+        } catch (error: Exception) {
+            throw HdhrException("Could not save the playback position.", error)
+        }
+        if (response.code !in 200..299) {
+            throw HdhrException(actionFailure(response.code, response.body, "Could not save the playback position"))
+        }
+    }
+
     /** Deletes one file. The episode is not set to record again. */
     fun deleteRecording(cmdUrl: String) {
         val url = recordingDeleteUrl(cmdUrl) ?: throw HdhrException("This recording cannot be deleted.")

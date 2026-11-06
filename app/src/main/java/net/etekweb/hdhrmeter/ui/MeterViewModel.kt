@@ -38,6 +38,8 @@ import net.etekweb.hdhrmeter.data.tunerStations
 import net.etekweb.hdhrmeter.data.StreamFailure
 import net.etekweb.hdhrmeter.data.probeRecording
 import net.etekweb.hdhrmeter.data.probeTimeshift
+import net.etekweb.hdhrmeter.data.recordingResumeToStore
+import net.etekweb.hdhrmeter.data.recordingResumeWall
 import net.etekweb.hdhrmeter.data.recordingSpan
 import net.etekweb.hdhrmeter.data.withMobileTranscode
 import net.etekweb.hdhrmeter.player.EnginePhase
@@ -268,6 +270,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private var scanJob: Job? = null
     private var recordingJob: Job? = null
     private var recordingGeneration = 0
+    private var resumeSaveGeneration = 0
     private var scheduledJob: Job? = null
     private var scheduledGeneration = 0
     private var dvrActionJob: Job? = null
@@ -517,15 +520,25 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Opens the live player on the recording that is showing its info. */
+    /** Opens the recording that is showing its info, from the beginning. */
     fun playRecording() {
+        openRecording(fromStart = true)
+    }
+
+    /** Opens the recording that is showing its info at its saved resume point. */
+    fun resumeRecording() {
+        openRecording(fromStart = false)
+    }
+
+    private fun openRecording(fromStart: Boolean) {
         val state = _ui.value
         val recording = state.dvr.recordings.firstOrNull { it.id == state.dvr.selectedId } ?: return
         if (recording.playUrl.isNullOrBlank()) return
+        val playing = if (fromStart) recording.copy(resumeSec = null) else recording
         cancelChannelHop()
         _ui.update {
             it.copy(
-                screen = Screen.PlayRecording(recording),
+                screen = Screen.PlayRecording(playing),
                 overlayVisible = true,
                 transcoding = false,
                 pendingChannel = null,
@@ -533,7 +546,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 tunerReleased = false,
             )
         }
-        startRecording(recording)
+        startRecording(playing)
     }
 
     /** Loads future recordings the first time the Scheduled tab is shown. */
@@ -1452,6 +1465,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             is Screen.PlayRecording -> {
+                saveRecordingPosition()
                 cancelChannelHop()
                 _ui.update {
                     it.copy(
@@ -1476,6 +1490,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onHostStop() {
         if (!_ui.value.screen.inPlayer || _ui.value.tunerReleased) return
+        saveRecordingPosition()
         cancelChannelHop()
         stopPlayback()
         _ui.update {
@@ -2283,6 +2298,54 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         releaseWifi()
     }
 
+    /**
+     * Writes the frame on screen to the record engine.
+     * A position already stored is left alone. A failed write puts the previous value back.
+     */
+    private fun saveRecordingPosition() {
+        val screen = _ui.value.screen as? Screen.PlayRecording ?: return
+        val clock = _ui.value.playbackClock
+        if (!clock.active) return
+        val start = clock.bufferStartMs
+        val position = _ui.value.pendingSkip?.targetMs ?: clock.positionMs
+        if (position < start) return
+        val durationMs = if (clock.timeshift && clock.liveMs > start) clock.liveMs - start else null
+        val resume = recordingResumeToStore(position - start, durationMs)
+        val stored = _ui.value.dvr.recordings.firstOrNull { it.id == screen.recording.id }
+        val previous = stored?.resumeSec
+        if (previous == resume) return
+        if (resume == 0L && (previous == null || previous == 0L)) return
+        val cmd = screen.recording.cmdUrl ?: stored?.cmdUrl
+        if (cmd.isNullOrBlank()) return
+        val recordingId = screen.recording.id
+        val generation = ++resumeSaveGeneration
+        applyRecordingResume(recordingId, resume)
+        viewModelScope.launch(Dispatchers.IO) {
+            val saved = runCatching { client.setRecordingResume(cmd, resume) }.isSuccess
+            if (generation != resumeSaveGeneration) return@launch
+            if (saved) return@launch
+            withContext(Dispatchers.Main) {
+                if (generation != resumeSaveGeneration) return@withContext
+                applyRecordingResume(recordingId, previous)
+            }
+        }
+    }
+
+    private fun applyRecordingResume(recordingId: String, resumeSec: Long?) {
+        _ui.update { state ->
+            val recordings = state.dvr.recordings.map { item ->
+                if (item.id == recordingId) item.copy(resumeSec = resumeSec) else item
+            }
+            val playing = state.screen as? Screen.PlayRecording
+            val screen = if (playing != null && playing.recording.id == recordingId) {
+                Screen.PlayRecording(playing.recording.copy(resumeSec = resumeSec))
+            } else {
+                state.screen
+            }
+            state.copy(screen = screen, dvr = state.dvr.copy(recordings = recordings))
+        }
+    }
+
     private fun startRecording(recording: Recording) {
         val url = recording.playUrl ?: return
         cancelSkip()
@@ -2319,7 +2382,8 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             }
             val now = System.currentTimeMillis()
             val span = recordingSpan(recording, now, if (probed.range == null) 0L else probed.totalBytes)
-            recordingPlay.begin(url, span, probed.range)
+            val resumeAt = if (probed.range != null) recordingResumeWall(recording, span) else null
+            recordingPlay.begin(url, span, probed.range, startWallMs = resumeAt ?: span.startMs)
             if (generation != playGeneration) {
                 recordingPlay.stop()
                 return@launch
@@ -2332,7 +2396,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                         timeshift = recordingPlay.seekable,
                         playing = true,
                         bufferStartMs = span.startMs,
-                        positionMs = span.startMs,
+                        positionMs = resumeAt ?: span.startMs,
                         liveMs = if (span.bounded) span.endMs else span.startMs + 1L,
                     ),
                 )

@@ -93,6 +93,19 @@ internal fun skipEpisodeQuery(seriesId: String, programId: String, startEpochSec
     return query
 }
 
+/**
+ * POST target for `cmd=set&Resume=`.
+ * [resumeSec] is seconds from the start, or [RECORDING_RESUME_WATCHED] when the file was finished.
+ */
+internal fun recordingResumeUrl(cmdUrl: String, resumeSec: Long): String? {
+    if (resumeSec < 0L || resumeSec > RECORDING_RESUME_WATCHED) return null
+    val raw = cmdUrl.trim()
+    if (!raw.startsWith("http://") && !raw.startsWith("https://")) return null
+    if (raw.any { it.isISOControl() || it.isWhitespace() }) return null
+    val join = if ('?' in raw) "&" else "?"
+    return "$raw${join}cmd=set&Resume=$resumeSec"
+}
+
 /** POST target for `cmd=delete`. An existing delete command is left as the engine wrote it. */
 internal fun recordingDeleteUrl(cmdUrl: String): String? {
     val raw = cmdUrl.trim()

@@ -49,6 +49,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import net.etekweb.hdhrmeter.data.Recording
 import net.etekweb.hdhrmeter.data.ScheduledRecording
+import net.etekweb.hdhrmeter.data.recordingCanResume
 import net.etekweb.hdhrmeter.data.formatStorageCapacity
 import java.time.Instant
 import java.time.ZoneOffset
@@ -65,6 +66,7 @@ fun DvrScreen(
     onOpen: (String) -> Unit,
     onClose: () -> Unit,
     onPlay: () -> Unit,
+    onResume: () -> Unit,
     onSection: (DvrSection) -> Unit,
     onEnsureScheduled: () -> Unit,
     onRefreshScheduled: () -> Unit,
@@ -85,7 +87,7 @@ fun DvrScreen(
     val scheduled = dvr.scheduled.firstOrNull { it.id == dvr.selectedScheduledId }
     when {
         dvr.section == DvrSection.Recordings && recording != null -> {
-            RecordingDetail(recording, dvr.acting, dvr.actionError, onClose, onPlay, onDelete)
+            RecordingDetail(recording, dvr.acting, dvr.actionError, onClose, onPlay, onResume, onDelete)
         }
         dvr.section == DvrSection.Scheduled && scheduled != null -> {
             ScheduledDetail(
@@ -465,6 +467,7 @@ private fun RecordingDetail(
     actionError: String?,
     onClose: () -> Unit,
     onPlay: () -> Unit,
+    onResume: () -> Unit,
     onDelete: () -> Unit,
 ) {
     BackHandler(enabled = !acting, onBack = onClose)
@@ -539,15 +542,12 @@ private fun RecordingDetail(
                 )
             }
             if (!recording.playUrl.isNullOrBlank()) {
-                Button(
-                    onClick = onPlay,
+                RecordingPlayActions(
+                    canResume = recordingCanResume(recording),
                     enabled = !acting,
-                    modifier = Modifier.padding(top = 12.dp),
-                ) {
-                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Play")
-                }
+                    onResume = onResume,
+                    onPlay = onPlay,
+                )
             }
             if (!actionError.isNullOrBlank()) {
                 Text(actionError, color = Bad, style = MaterialTheme.typography.bodyMedium)
@@ -560,6 +560,34 @@ private fun RecordingDetail(
             ) {
                 Text("Delete")
             }
+        }
+    }
+}
+
+@Composable
+private fun RecordingPlayActions(
+    canResume: Boolean,
+    enabled: Boolean,
+    onResume: () -> Unit,
+    onPlay: () -> Unit,
+) {
+    Column(
+        Modifier.padding(top = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (canResume) {
+            Button(onClick = onResume, enabled = enabled) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Resume")
+            }
+        }
+        Button(onClick = onPlay, enabled = enabled) {
+            if (!canResume) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+            }
+            Text("Play from Start")
         }
     }
 }
