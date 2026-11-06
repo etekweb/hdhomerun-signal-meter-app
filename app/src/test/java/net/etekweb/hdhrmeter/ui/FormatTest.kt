@@ -64,11 +64,21 @@ class FormatTest {
     }
 
     @Test
-    fun overlayTabDefaultsToInfoUnlessSignalWasStored() {
+    fun overlayTabDefaultsToInfoUnlessAKnownPageWasStored() {
         assertEquals(OverlayTab.Info, overlayTabFromStored(null))
         assertEquals(OverlayTab.Info, overlayTabFromStored(""))
         assertEquals(OverlayTab.Info, overlayTabFromStored("info"))
         assertEquals(OverlayTab.Signal, overlayTabFromStored("Signal"))
+        assertEquals(OverlayTab.Playback, overlayTabFromStored("Playback"))
+    }
+
+    @Test
+    fun recordingsHideTheSignalPageAndKeepPlayback() {
+        assertEquals(listOf(OverlayTab.Info, OverlayTab.Signal, OverlayTab.Playback), overlayTabsFor(false))
+        assertEquals(listOf(OverlayTab.Info, OverlayTab.Playback), overlayTabsFor(true))
+        assertEquals(OverlayTab.Info, visibleOverlayTab(OverlayTab.Signal, recording = true))
+        assertEquals(OverlayTab.Playback, visibleOverlayTab(OverlayTab.Playback, recording = true))
+        assertEquals(OverlayTab.Signal, visibleOverlayTab(OverlayTab.Signal, recording = false))
     }
 
     private fun zoned(year: Int, month: Int, day: Int, hour: Int, minute: Int, zone: ZoneId): Long {

@@ -146,6 +146,7 @@ class MainActivity : ComponentActivity() {
                         onDetach = viewModel::detachVideo,
                         onToggleOverlay = viewModel::toggleOverlay,
                         onSelectOverlayTab = viewModel::selectOverlayTab,
+                        onChannelStretch = viewModel::setChannelStretch,
                         onBack = viewModel::onBack,
                         onStep = viewModel::stepChannel,
                         onTranscode = viewModel::tryTranscode,

@@ -37,7 +37,11 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -49,6 +53,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -65,7 +70,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import net.etekweb.hdhrmeter.data.AiringRecordStatus
 import net.etekweb.hdhrmeter.data.Channel
+import net.etekweb.hdhrmeter.data.ChannelStretch
 import net.etekweb.hdhrmeter.data.GuideProgram
+import net.etekweb.hdhrmeter.data.STRETCH_PERCENT_MAX
+import net.etekweb.hdhrmeter.data.STRETCH_PERCENT_MIN
+import net.etekweb.hdhrmeter.data.channelStretchKey
+import net.etekweb.hdhrmeter.data.formatStretchPercent
+import net.etekweb.hdhrmeter.data.pictureScale
+import net.etekweb.hdhrmeter.data.stretchFor
+import net.etekweb.hdhrmeter.data.stretchPercent
 import net.etekweb.hdhrmeter.data.Recording
 import net.etekweb.hdhrmeter.data.airingRecordStatus
 import net.etekweb.hdhrmeter.data.SignalReading
@@ -84,6 +97,7 @@ fun PlayerScreen(
     onDetach: (VLCVideoLayout) -> Unit,
     onToggleOverlay: () -> Unit,
     onSelectOverlayTab: (OverlayTab) -> Unit,
+    onChannelStretch: (ChannelStretch) -> Unit,
     onBack: () -> Unit,
     onStep: (Int) -> Unit,
     onTranscode: () -> Unit,
@@ -103,10 +117,15 @@ fun PlayerScreen(
     val corner = watch?.channel?.guideNumber
         ?: recording?.channelNumber?.trim()?.ifBlank { null }
         ?: recording?.title.orEmpty()
+    val (stretchX, stretchY) = stretchFor(
+        playingGuideNumber(state.screen),
+        state.channelStretches,
+    ).pictureScale()
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color.Black),
+            .background(Color.Black)
+            .clipToBounds(),
     ) {
         AndroidView(
             factory = { context ->
@@ -129,6 +148,12 @@ fun PlayerScreen(
                 val video = frame.getChildAt(0) as? VLCVideoLayout ?: return@AndroidView
                 onDetach(video)
             },
+            update = { frame ->
+                // Scale the drawn picture around its center. 1 leaves that side alone.
+                // The sliders stay stored when stretch is off, and this stays at 1.
+                if (frame.scaleX != stretchX) frame.scaleX = stretchX
+                if (frame.scaleY != stretchY) frame.scaleY = stretchY
+            },
             modifier = Modifier
                 .fillMaxSize()
                 .onGloballyPositioned { coordinates ->
@@ -150,6 +175,7 @@ fun PlayerScreen(
                 state = state,
                 onToggleOverlay = onToggleOverlay,
                 onSelectTab = onSelectOverlayTab,
+                onChannelStretch = onChannelStretch,
                 onBack = onBack,
                 onStep = onStep,
                 onTranscode = onTranscode,
@@ -221,6 +247,7 @@ private fun SignalOverlay(
     state: UiState,
     onToggleOverlay: () -> Unit,
     onSelectTab: (OverlayTab) -> Unit,
+    onChannelStretch: (ChannelStretch) -> Unit,
     onBack: () -> Unit,
     onStep: (Int) -> Unit,
     onTranscode: () -> Unit,
@@ -293,6 +320,7 @@ private fun SignalOverlay(
                     onRecord = onRecordProgram,
                     recordBusy = state.schedule.saving,
                     onSelectTab = onSelectTab,
+                    onChannelStretch = onChannelStretch,
                     modifier = Modifier
                         .width(340.dp)
                         .heightIn(max = overlayHeight)
@@ -317,6 +345,7 @@ private fun SignalOverlay(
                             onRecord = onRecordProgram,
                             recordBusy = state.schedule.saving,
                             onSelectTab = onSelectTab,
+                            onChannelStretch = onChannelStretch,
                             modifier = Modifier
                                 .heightIn(max = panelMax)
                                 .padding(horizontal = 12.dp),
@@ -486,13 +515,21 @@ private fun OverlayPanel(
     onRecord: (() -> Unit)?,
     recordBusy: Boolean,
     onSelectTab: (OverlayTab) -> Unit,
+    onChannelStretch: (ChannelStretch) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val file = recording != null
-    val tab = if (file) OverlayTab.Info else state.overlayTab
+    val tabs = overlayTabsFor(file)
+    val tab = visibleOverlayTab(state.overlayTab, file)
     val showNext = tab == OverlayTab.Info && upcoming != null
     val infoScroll = rememberScrollState()
     val signalScroll = rememberScrollState()
+    val playbackScroll = rememberScrollState()
+    val scroll = when (tab) {
+        OverlayTab.Info -> infoScroll
+        OverlayTab.Signal -> signalScroll
+        OverlayTab.Playback -> playbackScroll
+    }
     Surface(
         color = Color(0xE612181D),
         shape = RoundedCornerShape(16.dp),
@@ -501,30 +538,41 @@ private fun OverlayPanel(
             .holdClicks(),
     ) {
         Column(Modifier.fillMaxWidth()) {
-            if (!file) OverlayTabs(selected = tab, onSelect = onSelectTab)
+            OverlayTabs(tabs = tabs, selected = tab, onSelect = onSelectTab)
             Column(
                 Modifier
                     .weight(1f, fill = false)
                     .fillMaxWidth()
-                    .verticalScroll(if (tab == OverlayTab.Info) infoScroll else signalScroll)
+                    .verticalScroll(scroll)
                     .padding(horizontal = 14.dp)
                     .padding(top = 12.dp, bottom = if (showNext) 8.dp else 14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                if (recording != null) {
-                    RecordingInfo(recording, program)
-                } else if (tab == OverlayTab.Info || channel == null) {
-                    ProgramInfo(
-                        program,
-                        state.guideLoading,
-                        state.guideError,
-                        recordStatus = if (tab == OverlayTab.Info) recordStatus else null,
-                        recordNotice = if (tab == OverlayTab.Info) recordNotice else null,
-                        onRecord = if (tab == OverlayTab.Info) onRecord else null,
-                        recordBusy = recordBusy,
+                when (tab) {
+                    OverlayTab.Playback -> PlaybackStretchPanel(
+                        guideNumber = channel?.guideNumber ?: recording?.channelNumber,
+                        stretch = stretchFor(
+                            channel?.guideNumber ?: recording?.channelNumber,
+                            state.channelStretches,
+                        ),
+                        onStretch = onChannelStretch,
                     )
-                } else {
-                    SignalInfo(channel, state)
+                    OverlayTab.Info -> if (recording != null) {
+                        RecordingInfo(recording, program)
+                    } else {
+                        ProgramInfo(
+                            program,
+                            state.guideLoading,
+                            state.guideError,
+                            recordStatus = recordStatus,
+                            recordNotice = recordNotice,
+                            onRecord = onRecord,
+                            recordBusy = recordBusy,
+                        )
+                    }
+                    OverlayTab.Signal -> if (channel != null) {
+                        SignalInfo(channel, state)
+                    }
                 }
             }
             if (tab == OverlayTab.Info && upcoming != null) UpNext(upcoming)
@@ -533,9 +581,13 @@ private fun OverlayPanel(
 }
 
 @Composable
-private fun OverlayTabs(selected: OverlayTab, onSelect: (OverlayTab) -> Unit) {
+private fun OverlayTabs(
+    tabs: List<OverlayTab>,
+    selected: OverlayTab,
+    onSelect: (OverlayTab) -> Unit,
+) {
     Row(Modifier.fillMaxWidth()) {
-        OverlayTab.entries.forEach { tab ->
+        tabs.forEach { tab ->
             val active = tab == selected
             Column(
                 modifier = Modifier
@@ -559,6 +611,97 @@ private fun OverlayTabs(selected: OverlayTab, onSelect: (OverlayTab) -> Unit) {
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun PlaybackStretchPanel(
+    guideNumber: String?,
+    stretch: ChannelStretch,
+    onStretch: (ChannelStretch) -> Unit,
+) {
+    val key = channelStretchKey(guideNumber)
+    if (key == null) {
+        Text(
+            "This picture has no channel number, so a stretch can't be saved for it.",
+            color = Muted,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        return
+    }
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text("Apply stretch", color = Paper, style = MaterialTheme.typography.titleMedium)
+            Text("Channel $key", color = Muted, style = MaterialTheme.typography.bodySmall)
+        }
+        Switch(
+            checked = stretch.enabled,
+            onCheckedChange = { enabled -> onStretch(stretch.copy(enabled = enabled)) },
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Ink,
+                checkedTrackColor = Amber,
+                uncheckedThumbColor = Paper,
+                uncheckedTrackColor = Color(0xFF3A4550),
+                uncheckedBorderColor = Color(0xFF3A4550),
+            ),
+        )
+    }
+    Text(
+        if (stretch.enabled) {
+            "The picture is stretched for this channel. Live TV and recordings share these sliders."
+        } else {
+            "Off for now. The sliders stay saved and apply again when you turn this on."
+        },
+        color = Muted,
+        style = MaterialTheme.typography.bodySmall,
+    )
+    Text(
+        "100% is the broadcast size. Each slider runs from 50% to 200%.",
+        color = Muted,
+        style = MaterialTheme.typography.bodySmall,
+    )
+    StretchSlider(
+        label = "Width",
+        percent = stretch.widthPercent,
+        onChange = { percent -> onStretch(stretch.copy(widthPercent = percent)) },
+    )
+    StretchSlider(
+        label = "Height",
+        percent = stretch.heightPercent,
+        onChange = { percent -> onStretch(stretch.copy(heightPercent = percent)) },
+    )
+}
+
+@Composable
+private fun StretchSlider(label: String, percent: Int, onChange: (Int) -> Unit) {
+    Column {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(label, color = Muted, style = MaterialTheme.typography.labelLarge)
+            Text(
+                formatStretchPercent(percent),
+                color = Paper,
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
+        Slider(
+            value = percent.toFloat(),
+            onValueChange = { onChange(stretchPercent(it)) },
+            valueRange = STRETCH_PERCENT_MIN.toFloat()..STRETCH_PERCENT_MAX.toFloat(),
+            steps = STRETCH_PERCENT_MAX - STRETCH_PERCENT_MIN - 1,
+            colors = SliderDefaults.colors(
+                thumbColor = Amber,
+                activeTrackColor = Amber,
+                inactiveTrackColor = Color(0xFF3A4550),
+                activeTickColor = Color.Transparent,
+                inactiveTickColor = Color.Transparent,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 

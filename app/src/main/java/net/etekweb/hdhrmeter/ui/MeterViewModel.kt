@@ -7,6 +7,9 @@ import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import net.etekweb.hdhrmeter.data.Channel
+import net.etekweb.hdhrmeter.data.ChannelStretch
+import net.etekweb.hdhrmeter.data.channelStretchKey
+import net.etekweb.hdhrmeter.data.normalized
 import net.etekweb.hdhrmeter.data.GuideProgram
 import net.etekweb.hdhrmeter.data.Recording
 import net.etekweb.hdhrmeter.data.RecordingRule
@@ -72,11 +75,33 @@ private const val SKIP_SETTLE_MS = 500L
 
 enum class ChannelFilter { All, Hd, Favorites, Recents }
 
-/** Player overlay page. [Info] is the default until the viewer picks [Signal]. */
-enum class OverlayTab { Info, Signal }
+/** Player overlay page. [Info] is the default until the viewer picks another page. */
+enum class OverlayTab { Info, Signal, Playback }
 
+/** [Info] when [raw] is missing or not a known tab name. */
 internal fun overlayTabFromStored(raw: String?): OverlayTab {
-    return if (raw == OverlayTab.Signal.name) OverlayTab.Signal else OverlayTab.Info
+    return OverlayTab.entries.firstOrNull { it.name == raw } ?: OverlayTab.Info
+}
+
+/** Recordings have no signal meters, so that page is live-only. */
+internal fun overlayTabsFor(recording: Boolean): List<OverlayTab> {
+    return if (recording) {
+        listOf(OverlayTab.Info, OverlayTab.Playback)
+    } else {
+        OverlayTab.entries
+    }
+}
+
+/** The stored page, or [Info] when that page is not on screen for this picture. */
+internal fun visibleOverlayTab(stored: OverlayTab, recording: Boolean): OverlayTab {
+    return stored.takeIf { it in overlayTabsFor(recording) } ?: OverlayTab.Info
+}
+
+/** Guide number of the picture on screen, before canonicalizing. */
+internal fun playingGuideNumber(screen: Screen): String? = when (screen) {
+    is Screen.Watch -> screen.channel.guideNumber
+    is Screen.PlayRecording -> screen.recording.channelNumber
+    Screen.Shell -> null
 }
 
 enum class PlaybackPhase { Idle, Tuning, Buffering, Ready }
@@ -166,6 +191,8 @@ data class UiState(
     val overlayVisible: Boolean = true,
     /** Kept while the overlay is hidden, the channel changes, and the process restarts. */
     val overlayTab: OverlayTab = OverlayTab.Info,
+    /** Stretch sliders keyed by guide number. Shared by live TV and recordings. */
+    val channelStretches: Map<String, ChannelStretch> = emptyMap(),
     val tunerReleased: Boolean = false,
     val tuners: TunerPanel = TunerPanel(),
     val dvr: DvrState = DvrState(),
@@ -262,6 +289,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 selectedDevice = recent,
                 tunerReach = if (recent == null) TunerReach.Missing else TunerReach.Checking,
                 overlayTab = overlayTabFromStored(store.loadOverlayTab()),
+                channelStretches = store.loadChannelStretches(),
             )
         },
     )
@@ -1429,6 +1457,17 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         if (_ui.value.overlayTab == tab) return
         _ui.update { it.copy(overlayTab = tab) }
         store.saveOverlayTab(tab.name)
+    }
+
+    /** Saves stretch for the channel on screen. Turning it off keeps the slider positions. */
+    fun setChannelStretch(stretch: ChannelStretch) {
+        val key = channelStretchKey(playingGuideNumber(_ui.value.screen)) ?: return
+        val next = stretch.normalized()
+        val current = _ui.value.channelStretches[key]?.normalized() ?: ChannelStretch()
+        if (next == current) return
+        val updated = _ui.value.channelStretches + (key to next)
+        store.saveChannelStretches(updated)
+        _ui.update { it.copy(channelStretches = updated) }
     }
 
     fun showOverlay() {

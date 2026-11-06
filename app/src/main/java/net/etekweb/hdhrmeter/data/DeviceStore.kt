@@ -119,11 +119,20 @@ class DeviceStore(context: Context) {
             .apply()
     }
 
-    /** `Info` or `Signal`. Missing and unknown values mean the Info tab. */
+    /** `Info`, `Signal`, or `Playback`. Missing and unknown values mean the Info tab. */
     fun loadOverlayTab(): String? = prefs.getString(KEY_OVERLAY_TAB, null)
 
     fun saveOverlayTab(tab: String) {
         prefs.edit().putString(KEY_OVERLAY_TAB, tab).apply()
+    }
+
+    /** Stretch sliders keyed by guide number. Empty when nothing has been set. */
+    fun loadChannelStretches(): Map<String, ChannelStretch> {
+        return decodeChannelStretches(prefs.getString(KEY_CHANNEL_STRETCH, null))
+    }
+
+    fun saveChannelStretches(stretches: Map<String, ChannelStretch>) {
+        prefs.edit().putString(KEY_CHANNEL_STRETCH, encodeChannelStretches(stretches)).apply()
     }
 
     private fun recentChannelsKey(deviceId: String) = "$KEY_RECENT_CHANNELS$deviceId"
@@ -138,6 +147,7 @@ class DeviceStore(context: Context) {
         const val KEY_SAVED_TUNERS = "saved_tuners"
         const val KEY_RECENT_CHANNELS = "recent_channels_"
         const val KEY_OVERLAY_TAB = "overlay_tab"
+        const val KEY_CHANNEL_STRETCH = "channel_stretch"
         const val KEY_ID = "device_id"
         const val KEY_NAME = "device_name"
         const val KEY_MODEL = "device_model"
