@@ -135,6 +135,13 @@ class DeviceStore(context: Context) {
         prefs.edit().putString(KEY_CHANNEL_STRETCH, encodeChannelStretches(stretches)).apply()
     }
 
+    /** Off unless the viewer turns hardware decoding on in Settings. */
+    fun loadHardwareDecode(): Boolean = prefs.getBoolean(KEY_HARDWARE_DECODE, false)
+
+    fun saveHardwareDecode(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_HARDWARE_DECODE, enabled).apply()
+    }
+
     private fun recentChannelsKey(deviceId: String) = "$KEY_RECENT_CHANNELS$deviceId"
 
     private companion object {
@@ -148,6 +155,7 @@ class DeviceStore(context: Context) {
         const val KEY_RECENT_CHANNELS = "recent_channels_"
         const val KEY_OVERLAY_TAB = "overlay_tab"
         const val KEY_CHANNEL_STRETCH = "channel_stretch"
+        const val KEY_HARDWARE_DECODE = "hardware_decode"
         const val KEY_ID = "device_id"
         const val KEY_NAME = "device_name"
         const val KEY_MODEL = "device_model"

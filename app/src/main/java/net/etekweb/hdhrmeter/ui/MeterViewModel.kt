@@ -198,6 +198,8 @@ data class UiState(
     val dvr: DvrState = DvrState(),
     val schedule: ScheduleState = ScheduleState(),
     val playbackClock: PlaybackClock = PlaybackClock(),
+    /** Software decoding unless the Settings checkbox is on. */
+    val hardwareDecode: Boolean = false,
 )
 
 /**
@@ -290,6 +292,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 tunerReach = if (recent == null) TunerReach.Missing else TunerReach.Checking,
                 overlayTab = overlayTabFromStored(store.loadOverlayTab()),
                 channelStretches = store.loadChannelStretches(),
+                hardwareDecode = store.loadHardwareDecode(),
             )
         },
     )
@@ -342,6 +345,11 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private var clockJob: Job? = null
 
     init {
+        engine.setHardwareDecode(store.loadHardwareDecode())
+        shift.watchInterlace(
+            token = { engine.playSerial() },
+            listener = { serial, interlaced -> engine.noteInterlaced(serial, interlaced) },
+        )
         viewModelScope.launch {
             engine.stats.collect { stats -> _ui.update { it.copy(video = stats) } }
         }
@@ -873,6 +881,13 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 if (first) reconcileStartup(_ui.value.devices)
             }
         }
+    }
+
+    fun setHardwareDecode(enabled: Boolean) {
+        if (enabled == _ui.value.hardwareDecode) return
+        store.saveHardwareDecode(enabled)
+        _ui.update { it.copy(hardwareDecode = enabled) }
+        engine.setHardwareDecode(enabled)
     }
 
     fun setManualHost(value: String) {
@@ -1473,6 +1488,13 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     fun showOverlay() {
         _ui.update { state ->
             if (state.overlayVisible) state else state.copy(overlayVisible = true)
+        }
+    }
+
+    /** Television back dismisses the chrome and leaves the picture playing. */
+    fun hideOverlay() {
+        _ui.update { state ->
+            if (state.overlayVisible) state.copy(overlayVisible = false) else state
         }
     }
 

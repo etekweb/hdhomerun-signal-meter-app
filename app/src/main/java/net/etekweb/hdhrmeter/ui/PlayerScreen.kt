@@ -4,10 +4,12 @@ import android.graphics.Rect
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -45,7 +47,9 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -54,6 +58,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -114,6 +119,9 @@ fun PlayerScreen(
     val watch = state.screen as? Screen.Watch
     val recording = (state.screen as? Screen.PlayRecording)?.recording
     if (watch == null && recording == null) return
+    val television = isTelevision()
+    val tvFocus = remember { TvPlayerFocus() }
+    val tv = if (television) tvFocus else null
     val corner = watch?.channel?.guideNumber
         ?: recording?.channelNumber?.trim()?.ifBlank { null }
         ?: recording?.title.orEmpty()
@@ -131,6 +139,14 @@ fun PlayerScreen(
             factory = { context ->
                 val video = VLCVideoLayout(context)
                 FrameLayout(context).apply {
+                    if (television) {
+                        // The surface would otherwise take the direction pad away from the controls.
+                        isFocusable = false
+                        isFocusableInTouchMode = false
+                        descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                        video.isFocusable = false
+                        video.isFocusableInTouchMode = false
+                    }
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT,
@@ -156,6 +172,7 @@ fun PlayerScreen(
             },
             modifier = Modifier
                 .fillMaxSize()
+                .then(if (television) Modifier.focusProperties { canFocus = false } else Modifier)
                 .onGloballyPositioned { coordinates ->
                     val bounds = coordinates.boundsInWindow()
                     onVideoBounds(
@@ -186,6 +203,7 @@ fun PlayerScreen(
                 onSeek = onSeek,
                 onSkip = onSkip,
                 onRecord = onRecord,
+                tv = tv,
             )
         } else if (showChrome) {
             val touchSlop = LocalViewConfiguration.current.touchSlop
@@ -258,6 +276,7 @@ private fun SignalOverlay(
     onSeek: (Long) -> Unit,
     onSkip: (Long) -> Unit,
     onRecord: (String, String, GuideProgram) -> Unit,
+    tv: TvPlayerFocus?,
 ) {
     BoxWithConstraints(
         Modifier
@@ -300,14 +319,14 @@ private fun SignalOverlay(
         val overlayHeight = maxHeight
         val number = channel?.guideNumber ?: recording?.channelNumber?.trim().orEmpty()
         val name = channel?.guideName ?: recording?.title.orEmpty()
-        Box(Modifier.fillMaxSize().noRippleClick { onToggleOverlay() })
+        Box(Modifier.fillMaxSize().noRippleClick(onClick = onToggleOverlay, focusable = tv == null))
         if (sidePanel) {
             Row(Modifier.fillMaxSize()) {
                 Column(Modifier.weight(1f).fillMaxHeight()) {
-                    ChannelHeader(number, name, onBack)
+                    ChannelHeader(number, name, onBack, television = tv != null)
                     Spacer(Modifier.weight(1f))
                     NoticeBlock(state, onTranscode, onResume, Modifier.padding(horizontal = 12.dp))
-                    Transport(state, program, onStep, onTogglePlay, onJumpStart, onJumpLive, onSeek, onSkip)
+                    Transport(state, program, tv, onStep, onTogglePlay, onJumpStart, onJumpLive, onSeek, onSkip)
                 }
                 OverlayPanel(
                     channel = channel,
@@ -321,6 +340,7 @@ private fun SignalOverlay(
                     recordBusy = state.schedule.saving,
                     onSelectTab = onSelectTab,
                     onChannelStretch = onChannelStretch,
+                    tv = tv,
                     modifier = Modifier
                         .width(340.dp)
                         .heightIn(max = overlayHeight)
@@ -329,7 +349,7 @@ private fun SignalOverlay(
             }
         } else {
             Column(Modifier.fillMaxSize()) {
-                ChannelHeader(number, name, onBack)
+                ChannelHeader(number, name, onBack, television = tv != null)
                 BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
                     // Keep the channel buttons and any playback notice below a long description.
                     val panelMax = (maxHeight - 320.dp).coerceAtLeast(120.dp)
@@ -346,6 +366,7 @@ private fun SignalOverlay(
                             recordBusy = state.schedule.saving,
                             onSelectTab = onSelectTab,
                             onChannelStretch = onChannelStretch,
+                            tv = tv,
                             modifier = Modifier
                                 .heightIn(max = panelMax)
                                 .padding(horizontal = 12.dp),
@@ -356,7 +377,7 @@ private fun SignalOverlay(
                             onResume,
                             Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         )
-                        Transport(state, program, onStep, onTogglePlay, onJumpStart, onJumpLive, onSeek, onSkip)
+                        Transport(state, program, tv, onStep, onTogglePlay, onJumpStart, onJumpLive, onSeek, onSkip)
                     }
                 }
             }
@@ -456,14 +477,20 @@ private fun SkipCard(skip: PendingSkip, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ChannelHeader(number: String, name: String, onBack: () -> Unit) {
+private fun ChannelHeader(number: String, name: String, onBack: () -> Unit, television: Boolean) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(start = 4.dp, end = 16.dp, top = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(onClick = onBack) {
+        IconButton(
+            onClick = onBack,
+            modifier = Modifier.tvFocusBorder(television && focused),
+            interactionSource = if (television) interaction else null,
+        ) {
             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Paper)
         }
         Column(Modifier.weight(1f)) {
@@ -516,6 +543,7 @@ private fun OverlayPanel(
     recordBusy: Boolean,
     onSelectTab: (OverlayTab) -> Unit,
     onChannelStretch: (ChannelStretch) -> Unit,
+    tv: TvPlayerFocus?,
     modifier: Modifier = Modifier,
 ) {
     val file = recording != null
@@ -535,10 +563,16 @@ private fun OverlayPanel(
         shape = RoundedCornerShape(16.dp),
         modifier = modifier
             .fillMaxWidth()
-            .holdClicks(),
+            .holdClicks(focusable = tv == null),
     ) {
         Column(Modifier.fillMaxWidth()) {
-            OverlayTabs(tabs = tabs, selected = tab, onSelect = onSelectTab)
+            OverlayTabs(
+                tabs = tabs,
+                selected = tab,
+                onSelect = onSelectTab,
+                tv = tv,
+                returnStop = rightmostTransport(enabledTransportStopsFor(state)),
+            )
             Column(
                 Modifier
                     .weight(1f, fill = false)
@@ -585,30 +619,50 @@ private fun OverlayTabs(
     tabs: List<OverlayTab>,
     selected: OverlayTab,
     onSelect: (OverlayTab) -> Unit,
+    tv: TvPlayerFocus?,
+    returnStop: TransportStop?,
 ) {
     Row(Modifier.fillMaxWidth()) {
         tabs.forEach { tab ->
-            val active = tab == selected
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .semantics { this.selected = active }
-                    .clickable(role = Role.Tab) { onSelect(tab) }
-                    .padding(top = 10.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    tab.name,
-                    color = if (active) Amber else Muted,
-                    style = MaterialTheme.typography.labelLarge,
-                )
-                Spacer(Modifier.height(8.dp))
-                Box(
+            key(tab) {
+                val active = tab == selected
+                val interaction = remember(tab) { MutableInteractionSource() }
+                val focused by interaction.collectIsFocusedAsState()
+                val highlight = tv != null && focused
+                val click = if (tv == null) {
+                    Modifier.clickable(role = Role.Tab) { onSelect(tab) }
+                } else {
                     Modifier
-                        .fillMaxWidth()
-                        .height(2.dp)
-                        .background(if (active) Amber else Color(0xFF3A4550)),
-                )
+                        .then(tv.tabModifier(tab, tabs, returnStop))
+                        .tvFocusBorder(highlight)
+                        .background(if (highlight) Color.White.copy(alpha = 0.16f) else Color.Transparent)
+                        .clickable(
+                            interactionSource = interaction,
+                            indication = null,
+                            role = Role.Tab,
+                        ) { onSelect(tab) }
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics { this.selected = active }
+                        .then(click)
+                        .padding(top = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        tab.name,
+                        color = if (active) Amber else Muted,
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(2.dp)
+                            .background(if (active) Amber else Color(0xFF3A4550)),
+                    )
+                }
             }
         }
     }
@@ -938,17 +992,20 @@ private fun StreamFacts(
 ) {
     val codec = videoCodecLabel(video.videoMime, channel.videoCodec)
     val picture = buildList {
-        if (video.width != null && video.height != null) add("${video.width}×${video.height}")
+        if (video.width != null && video.height != null) {
+            add(formatPictureSize(video.width, video.height, video.interlaced))
+        }
         codec?.let { add(it) }
         formatFps(video.frameRate)?.let { add("$it fps") }
     }
-    val audio = listOfNotNull(
-        audioCodecLabel(video.audioMime, channel.audioCodec),
-        audioLayout(video.audioChannels),
-    ).joinToString(" ")
+    val audioRows = signalAudioRows(video.audioTracks, channel.audioCodec)
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Fact("Video", picture.joinToString(" · ").ifBlank { "Waiting for the stream" })
-        if (audio.isNotBlank()) Fact("Audio", audio)
+        Fact("Decode", formatDecoder(video.hardwareDecoded))
+        audioRows.forEach { (label, value) -> Fact(label, value) }
+        audioOutputNoteFor(video.audioTracks, channel.audioCodec, video.audioPassthrough)?.let { note ->
+            Text(note, color = Muted, style = MaterialTheme.typography.bodySmall)
+        }
         Fact("Live bitrate", formatBitrate(video.bitrateBps))
         Fact("RF rate", formatBitrate(signal?.channelRateBps))
         if (transcoding) {
@@ -963,13 +1020,19 @@ private fun StreamFacts(
 
 @Composable
 private fun Fact(label: String, value: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top,
+    ) {
         Text(label, color = Muted, style = MaterialTheme.typography.bodySmall)
         Text(
             value,
+            modifier = Modifier.weight(1f).padding(start = 12.dp),
             color = Paper,
             style = MaterialTheme.typography.bodySmall,
             fontFamily = FontFamily.Monospace,
+            textAlign = TextAlign.End,
         )
     }
 }
@@ -1012,6 +1075,7 @@ private fun NoticeBlock(
 private fun Transport(
     state: UiState,
     program: GuideProgram?,
+    tv: TvPlayerFocus?,
     onStep: (Int) -> Unit,
     onTogglePlay: () -> Unit,
     onJumpStart: () -> Unit,
@@ -1021,7 +1085,9 @@ private fun Transport(
 ) {
     val clock = state.playbackClock
     val file = state.screen is Screen.PlayRecording
-    val controls = clock.active && state.playbackError == null && !state.tunerReleased
+    val enabledStops = enabledTransportStopsFor(state)
+    val controls = enabledStops.isNotEmpty()
+    val entryTab = overlayTabsFor(file).first()
     val endLabel = when {
         file && clock.timeshift -> formatClockTime(clock.liveMs)
         file -> ""
@@ -1030,33 +1096,55 @@ private fun Transport(
     Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
         if (controls) {
             PlaybackBar(clock, program, onSeek, endLabel = endLabel, markLive = !file)
+            if (tv != null) {
+                LaunchedEffect(Unit) { tv.pause.requestFocus() }
+            }
             Row(
                 Modifier.fillMaxWidth().padding(top = 2.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                PlaybackTextButton("Start", enabled = clock.timeshift, onClick = onJumpStart)
-                PlaybackTextButton(
-                    formatSkipDelta(-SKIP_STEP_MS),
-                    enabled = clock.timeshift,
+                TransportStopButton(
+                    stop = TransportStop.Start,
+                    label = "Start",
+                    enabledStops = enabledStops,
+                    entryTab = entryTab,
+                    tv = tv,
+                    onClick = onJumpStart,
+                )
+                TransportStopButton(
+                    stop = TransportStop.Rewind,
+                    label = formatSkipDelta(-SKIP_STEP_MS),
+                    enabledStops = enabledStops,
+                    entryTab = entryTab,
+                    tv = tv,
                     onClick = { onSkip(-SKIP_STEP_MS) },
                 )
-                PlaybackTextButton(
-                    if (clock.playing) "Pause" else "Play",
-                    enabled = true,
+                TransportStopButton(
+                    stop = TransportStop.Pause,
+                    label = if (clock.playing) "Pause" else "Play",
+                    enabledStops = enabledStops,
+                    entryTab = entryTab,
+                    tv = tv,
                     onClick = onTogglePlay,
                 )
-                PlaybackTextButton(
-                    formatSkipDelta(SKIP_STEP_MS),
-                    enabled = clock.timeshift,
+                TransportStopButton(
+                    stop = TransportStop.Forward,
+                    label = formatSkipDelta(SKIP_STEP_MS),
+                    enabledStops = enabledStops,
+                    entryTab = entryTab,
+                    tv = tv,
                     onClick = { onSkip(SKIP_STEP_MS) },
                 )
                 val behind = clock.liveMs - clock.positionMs
-                PlaybackTextButton(
-                    "Live",
-                    enabled = !file && (clock.timeshift || !clock.playing),
-                    onClick = onJumpLive,
+                TransportStopButton(
+                    stop = TransportStop.Live,
+                    label = "Live",
+                    enabledStops = enabledStops,
+                    entryTab = entryTab,
+                    tv = tv,
                     color = if (behind < 3_000L) Good else Amber,
+                    onClick = onJumpLive,
                 )
             }
         }
@@ -1065,7 +1153,7 @@ private fun Transport(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            ChannelStepButton("CH −") { onStep(-1) }
+            ChannelStepButton("CH −", television = tv != null) { onStep(-1) }
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 when {
                     state.playbackError != null || state.tunerReleased -> Unit
@@ -1087,7 +1175,7 @@ private fun Transport(
                     Text("Tuner $index", color = Muted, style = MaterialTheme.typography.labelSmall)
                 }
             }
-            ChannelStepButton("CH +") { onStep(1) }
+            ChannelStepButton("CH +", television = tv != null) { onStep(1) }
         }
         if (file && state.playbackError == null && !state.tunerReleased &&
             (state.phase == PlaybackPhase.Tuning || state.phase == PlaybackPhase.Buffering)
@@ -1217,19 +1305,52 @@ private fun PlaybackBar(
 }
 
 @Composable
+private fun TransportStopButton(
+    stop: TransportStop,
+    label: String,
+    enabledStops: Set<TransportStop>,
+    entryTab: OverlayTab,
+    tv: TvPlayerFocus?,
+    color: Color = Paper,
+    onClick: () -> Unit,
+) {
+    val enabled = stop in enabledStops
+    PlaybackTextButton(
+        label = label,
+        enabled = enabled,
+        onClick = onClick,
+        color = color,
+        television = tv != null,
+        modifier = if (tv != null && enabled) {
+            tv.transportModifier(stop, enabledStops, entryTab)
+        } else {
+            Modifier
+        },
+    )
+}
+
+@Composable
 private fun PlaybackTextButton(
     label: String,
     enabled: Boolean,
     onClick: () -> Unit,
     color: Color = Paper,
+    modifier: Modifier = Modifier,
+    television: Boolean = false,
 ) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val highlight = television && focused
+    val shape = RoundedCornerShape(8.dp)
     TextButton(
         onClick = onClick,
         enabled = enabled,
-        shape = RoundedCornerShape(8.dp),
+        modifier = modifier.tvFocusBorder(highlight),
+        interactionSource = interaction,
+        shape = shape,
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
         colors = ButtonDefaults.textButtonColors(
-            containerColor = Color(0x8012181D),
+            containerColor = if (highlight) Color.White.copy(alpha = 0.22f) else Color(0x8012181D),
             contentColor = color,
             disabledContentColor = Muted,
         ),
@@ -1239,26 +1360,46 @@ private fun PlaybackTextButton(
 }
 
 @Composable
-private fun ChannelStepButton(label: String, onClick: () -> Unit) {
+private fun ChannelStepButton(
+    label: String,
+    television: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val highlight = television && focused
+    val shape = RoundedCornerShape(8.dp)
     TextButton(
         onClick = onClick,
-        shape = RoundedCornerShape(8.dp),
-        colors = ButtonDefaults.textButtonColors(containerColor = Color(0x8012181D)),
+        modifier = Modifier.tvFocusBorder(highlight),
+        interactionSource = if (television) interaction else null,
+        shape = shape,
+        colors = ButtonDefaults.textButtonColors(
+            containerColor = if (highlight) Color.White.copy(alpha = 0.22f) else Color(0x8012181D),
+        ),
     ) {
         Text(label)
     }
 }
 
-@Composable
-private fun Modifier.holdClicks(): Modifier {
-    val source = remember { MutableInteractionSource() }
-    return clickable(interactionSource = source, indication = null, onClick = {})
+/** White outline so the direction pad's landing spot is visible from across the room. */
+private fun Modifier.tvFocusBorder(highlight: Boolean): Modifier {
+    if (!highlight) return this
+    return border(3.dp, Color.White, RoundedCornerShape(8.dp))
 }
 
 @Composable
-private fun Modifier.noRippleClick(onClick: () -> Unit): Modifier {
+private fun Modifier.holdClicks(focusable: Boolean = true): Modifier {
     val source = remember { MutableInteractionSource() }
-    return clickable(interactionSource = source, indication = null, onClick = onClick)
+    val click = clickable(interactionSource = source, indication = null, onClick = {})
+    return if (focusable) this.then(click) else this.focusProperties { canFocus = false }.then(click)
+}
+
+@Composable
+private fun Modifier.noRippleClick(onClick: () -> Unit, focusable: Boolean = true): Modifier {
+    val source = remember { MutableInteractionSource() }
+    val click = clickable(interactionSource = source, indication = null, onClick = onClick)
+    return if (focusable) this.then(click) else this.focusProperties { canFocus = false }.then(click)
 }
 
 private fun readingText(percent: Int?, detail: String?): String {

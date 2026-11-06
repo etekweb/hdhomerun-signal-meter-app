@@ -26,6 +26,11 @@ class PlaybackShift : Closeable {
 
     val localUrl: String get() = relay.localUrl
     val active: Boolean get() = upstream != null
+
+    fun watchInterlace(token: () -> Int, listener: (Int, Boolean) -> Unit) {
+        relay.interlaceToken = token
+        relay.interlaceListener = listener
+    }
     val bufferStartMs: Long get() = map.bufferStartMs
 
     fun openSession(origin: String, guideNumber: String): String? {

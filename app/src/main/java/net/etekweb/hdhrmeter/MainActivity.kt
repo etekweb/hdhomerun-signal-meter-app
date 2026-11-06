@@ -8,6 +8,7 @@ import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.util.Rational
+import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -44,6 +45,10 @@ import net.etekweb.hdhrmeter.ui.PlayerScreen
 import net.etekweb.hdhrmeter.ui.RecordConfirmDialog
 import net.etekweb.hdhrmeter.ui.Screen
 import net.etekweb.hdhrmeter.ui.inPlayer
+import net.etekweb.hdhrmeter.ui.isTelevision
+import net.etekweb.hdhrmeter.ui.isTelevisionUi
+import net.etekweb.hdhrmeter.ui.televisionBackHidesPlayerOverlay
+import net.etekweb.hdhrmeter.ui.televisionRemoteRevealsOverlay
 import net.etekweb.hdhrmeter.ui.SettingsScreen
 import net.etekweb.hdhrmeter.ui.TunerGate
 
@@ -131,10 +136,17 @@ class MainActivity : ComponentActivity() {
                     window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 }
             }
+            val television = isTelevision()
             BackHandler(enabled = state.schedule.pending != null || playing) {
                 when {
                     state.schedule.saving -> Unit
                     state.schedule.pending != null -> viewModel.dismissRecording()
+                    televisionBackHidesPlayerOverlay(
+                        television,
+                        playing,
+                        state.overlayVisible,
+                        showChrome,
+                    ) -> viewModel.hideOverlay()
                     else -> viewModel.onBack()
                 }
             }
@@ -220,6 +232,7 @@ class MainActivity : ComponentActivity() {
                                 onSelectHdHomeRun = viewModel::selectGuideHdHomeRun,
                                 onSelectGuide = viewModel::selectGuideSource,
                                 onRemoveGuide = viewModel::removeGuideSource,
+                                onHardwareDecode = viewModel::setHardwareDecode,
                             )
                         }
                     }
@@ -240,6 +253,25 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val state = viewModel.ui.value
+        val reveal = televisionRemoteRevealsOverlay(
+            television = isTelevisionUi(resources.configuration.uiMode),
+            playing = state.screen.inPlayer,
+            overlayVisible = state.overlayVisible,
+            chromeVisible = !inPip && !enteringPip,
+            keyCode = event.keyCode,
+        )
+        if (reveal) {
+            // The key that opens the chrome should not also move focus or press pause.
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                viewModel.showOverlay()
+            }
+            return true
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onStop() {

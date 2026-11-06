@@ -2,6 +2,7 @@ package net.etekweb.hdhrmeter.ui
 
 import net.etekweb.hdhrmeter.data.GuideProgram
 import net.etekweb.hdhrmeter.data.SignalReading
+import net.etekweb.hdhrmeter.player.AudioReport
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -23,6 +24,21 @@ class FormatTest {
         assertEquals("31 · 8VSB", rfChannelText(reading(rfChannel = null, frequencyHz = 575_000_000L, modulation = "8vsb"), null))
         assertNull(rfChannelText(null, null))
         assertNull(rfChannelText(reading(rfChannel = null, frequencyHz = null, modulation = null), null))
+    }
+
+    @Test
+    fun pictureSizeMarksOnlyAKnownInterlacedStream() {
+        assertEquals("720×480(i)", formatPictureSize(720, 480, true))
+        assertEquals("1920×1080(i)", formatPictureSize(1920, 1080, true))
+        assertEquals("1280×720", formatPictureSize(1280, 720, false))
+        assertEquals("1920×1080", formatPictureSize(1920, 1080, null))
+    }
+
+    @Test
+    fun decoderNamesThePathInUse() {
+        assertEquals("Hardware", formatDecoder(true))
+        assertEquals("Software", formatDecoder(false))
+        assertEquals("—", formatDecoder(null))
     }
 
     @Test
@@ -61,6 +77,97 @@ class FormatTest {
             "Today · 8:00 PM – 9:00 PM",
             formatGuideWhen(programs[0].startEpochMs, programs[0].stopEpochMs, now, zone, Locale.US),
         )
+    }
+
+    @Test
+    fun signalAudioShowsDolbyDigitalPlusWhenTheDecoderStillSaysAc3() {
+        val track = AudioReport(
+            codec = "A52 Audio (aka AC3)",
+            originalCodec = "A/52 B Audio (aka E-AC3)",
+            fourcc = "a52",
+            channels = 6,
+            sampleRateHz = 48_000,
+            bitrateBps = 384_000,
+            language = "eng",
+        )
+        assertEquals(
+            listOf(
+                "Audio" to "Dolby Digital Plus (E-AC-3) · 5.1 · 48 kHz · 384 kbps · English",
+                "Codec" to "a52 · A52 Audio (aka AC3) · original A/52 B Audio (aka E-AC3)",
+                "Lineup" to "AC-3",
+            ),
+            signalAudioRows(listOf(track), "AC3"),
+        )
+        assertEquals(
+            "Passthrough. This device can send Dolby Digital Plus (E-AC-3) to the TV.",
+            audioOutputNoteFor(listOf(track), "AC3", passthrough = true),
+        )
+    }
+
+    @Test
+    fun signalAudioKeepsPlainDolbyDigitalAndHidesAMatchingLineup() {
+        val track = AudioReport(
+            codec = "A52 Audio (aka AC3)",
+            fourcc = "a52",
+            channels = 2,
+            sampleRateHz = 44_100,
+            bitrateBps = 192_000,
+            language = "eng",
+            description = "English",
+        )
+        assertEquals(
+            listOf(
+                "Audio" to "AC-3 · stereo · 44.1 kHz · 192 kbps · English",
+                "Codec" to "a52 · A52 Audio (aka AC3)",
+            ),
+            signalAudioRows(listOf(track), "AC3"),
+        )
+        assertEquals(
+            "Decoded here. This device decodes AC-3 before it reaches the TV.",
+            audioOutputNoteFor(listOf(track), "AC3", passthrough = false),
+        )
+    }
+
+    @Test
+    fun signalAudioMarksAtmosAndListsTheOtherTrack() {
+        val surround = AudioReport(
+            id = 1,
+            codec = "Enhanced Audio Coding 3 (E-AC-3)",
+            fourcc = "eac3",
+            channels = 6,
+            sampleRateHz = 48_000,
+            bitrateBps = 448_000,
+            language = "eng",
+            profile = 30,
+            playing = true,
+        )
+        val stereo = AudioReport(
+            id = 2,
+            codec = "MPEG AAC Audio",
+            fourcc = "mp4a",
+            channels = 2,
+            sampleRateHz = 48_000,
+            bitrateBps = 128_000,
+            language = "spa",
+            description = "Visually impaired",
+        )
+        assertEquals(
+            listOf(
+                "Audio 1" to "Dolby Atmos (E-AC-3) · 5.1 · 48 kHz · 448 kbps · English · playing",
+                "Codec 1" to "eac3 · Enhanced Audio Coding 3 (E-AC-3) · profile 30",
+                "Audio 2" to "AAC · stereo · 48 kHz · 128 kbps · Spanish · Visually impaired",
+                "Codec 2" to "mp4a · MPEG AAC Audio",
+                "Lineup" to "AC-3",
+            ),
+            signalAudioRows(listOf(surround, stereo), "AC3"),
+        )
+    }
+
+    @Test
+    fun signalAudioFallsBackToTheLineupUntilATrackArrives() {
+        assertEquals(listOf("Audio" to "AC-3"), signalAudioRows(emptyList(), "AC3"))
+        assertEquals(emptyList<Pair<String, String>>(), signalAudioRows(emptyList(), null))
+        assertNull(audioOutputNoteFor(emptyList(), "AC3", passthrough = true))
     }
 
     @Test
