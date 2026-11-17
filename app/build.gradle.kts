@@ -1,8 +1,13 @@
 import org.gradle.api.tasks.testing.Test
+import java.util.Properties
 
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+val localProperties = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.isFile }?.inputStream()?.use { load(it) }
 }
 
 android {
@@ -18,8 +23,24 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("production") {
+            storeFile = rootProject.file(
+                localProperties.getProperty("signing.storeFile")
+                    ?: "${System.getProperty("user.home")}/.gradle/AndroidAppKeystore",
+            )
+            keyAlias = localProperties.getProperty("signing.keyAlias", "key0")
+            storePassword = localProperties.getProperty("signing.storePassword")
+            keyPassword = localProperties.getProperty("signing.keyPassword")
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("production")
+        }
         release {
+            signingConfig = signingConfigs.getByName("production")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

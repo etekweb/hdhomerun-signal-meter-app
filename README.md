@@ -31,6 +31,15 @@ Tap the picture to hide the overlay. Channel up and down skip protected channels
 
 Open this folder in Android Studio. It uses JDK 17 bytecode, `compileSdk` 37, and `minSdk` 26 (Android 8.0). Android Studio writes `local.properties` with your SDK path.
 
+Debug builds (including Android Studio's Run button) and release builds use the same production signing key. The default keystore is `~/.gradle/AndroidAppKeystore`, with alias `key0`. Add its passwords to the ignored `local.properties` file, keeping the existing `sdk.dir` entry:
+
+```properties
+signing.storePassword=YOUR_KEYSTORE_PASSWORD
+signing.keyPassword=YOUR_KEY_PASSWORD
+```
+
+To use a different keystore location or alias, also set `signing.storeFile=C:/path/to/keystore` and `signing.keyAlias=your-alias`. Use forward slashes for Windows paths. Java properties escaping applies to passwords (for example, write a literal backslash as `\\`). Keep the keystore and passwords out of source control. Signing requires both passwords; Android Studio's saved Generate Signed APK dialog passwords are not used by Gradle.
+
 From a shell, with `JAVA_HOME` pointing at Android Studio’s `jbr`:
 
 ```
