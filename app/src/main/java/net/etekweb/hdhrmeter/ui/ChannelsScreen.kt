@@ -73,6 +73,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -415,6 +416,7 @@ fun ChannelsScreen(
                                 channel,
                                 program = guide?.airing(channel.guideNumber, channel.guideName, nowMs),
                                 upcoming = guide?.upcoming(channel.guideNumber, channel.guideName, nowMs),
+                                nowMs = nowMs,
                                 onWatch = { onWatch(channel) },
                                 onOpenGuide = {
                                     scheduleProgram = null
@@ -663,6 +665,7 @@ private fun ChannelRow(
     channel: Channel,
     program: GuideProgram?,
     upcoming: GuideProgram?,
+    nowMs: Long,
     onWatch: () -> Unit,
     onOpenGuide: () -> Unit,
 ) {
@@ -673,71 +676,92 @@ private fun ChannelRow(
             .fillMaxWidth()
             .alpha(if (channel.drm) 0.55f else 1f),
     ) {
-        Row(
-            modifier = Modifier.height(IntrinsicSize.Min),
-            verticalAlignment = Alignment.Top,
-        ) {
-            Column(
-                Modifier
-                    .fillMaxHeight()
-                    .clickable(
-                        role = Role.Button,
-                        onClickLabel = "Open channel guide",
-                        onClick = onOpenGuide,
-                    )
-                    .padding(start = 12.dp, top = 12.dp, bottom = 12.dp)
-                    .width(88.dp),
+        Box {
+            Row(
+                modifier = Modifier.height(IntrinsicSize.Min),
+                verticalAlignment = Alignment.Top,
             ) {
-                Text(
-                    channel.guideNumber,
-                    fontFamily = FontFamily.Monospace,
-                    color = Amber,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                )
-                Text(
-                    channel.guideName,
-                    color = Paper,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                ChannelMarks(channel)
-            }
-            Box(
-                Modifier
-                    .fillMaxHeight()
-                    .padding(horizontal = 10.dp, vertical = 12.dp)
-                    .width(1.dp)
-                    .background(MaterialTheme.colorScheme.outline),
-            )
-            Column(
-                Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .clickable(
-                        role = Role.Button,
-                        onClickLabel = "Watch",
-                        onClick = onWatch,
-                    )
-                    .padding(end = 12.dp, top = 12.dp, bottom = 12.dp),
-            ) {
-                if (program != null) {
+                Column(
+                    Modifier
+                        .fillMaxHeight()
+                        .clickable(
+                            role = Role.Button,
+                            onClickLabel = "Open channel guide",
+                            onClick = onOpenGuide,
+                        )
+                        .padding(start = 12.dp, top = 12.dp, bottom = 12.dp)
+                        .width(88.dp),
+                ) {
                     Text(
-                        program.title,
+                        channel.guideNumber,
+                        fontFamily = FontFamily.Monospace,
+                        color = Amber,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                    )
+                    Text(
+                        channel.guideName,
                         color = Paper,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = MaterialTheme.typography.bodySmall,
                     )
-                    Text(
-                        formatAirTime(program.startEpochMs, program.stopEpochMs),
-                        color = Muted,
-                        maxLines = 1,
-                        style = MaterialTheme.typography.labelMedium,
-                    )
+                    ChannelMarks(channel)
                 }
-                if (upcoming != null) UpcomingLine(upcoming)
+                Box(
+                    Modifier
+                        .fillMaxHeight()
+                        .padding(horizontal = 10.dp, vertical = 12.dp)
+                        .width(1.dp)
+                        .background(MaterialTheme.colorScheme.outline),
+                )
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clickable(
+                            role = Role.Button,
+                            onClickLabel = "Watch",
+                            onClick = onWatch,
+                        ),
+                ) {
+                    Column(Modifier.padding(end = 12.dp, top = 12.dp, bottom = 12.dp)) {
+                        if (program != null) {
+                            Text(
+                                program.title,
+                                color = Paper,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                formatAirTime(program.startEpochMs, program.stopEpochMs),
+                                color = Muted,
+                                maxLines = 1,
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
+                        if (upcoming != null) UpcomingLine(upcoming)
+                    }
+                    if (program != null && program.stopEpochMs > program.startEpochMs) {
+                        val progress = ((nowMs - program.startEpochMs).toDouble() /
+                            (program.stopEpochMs - program.startEpochMs)).toFloat().coerceIn(0f, 1f)
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(end = 12.dp)
+                                .fillMaxWidth()
+                                .height(2.dp)
+                                .semantics { contentDescription = "Current program progress" },
+                            color = Amber,
+                            trackColor = MaterialTheme.colorScheme.outline,
+                            strokeCap = StrokeCap.Butt,
+                            gapSize = 0.dp,
+                            drawStopIndicator = {},
+                        )
+                    }
+                }
             }
         }
     }
