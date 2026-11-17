@@ -217,6 +217,7 @@ class MainActivity : ComponentActivity() {
                                     onEdit = viewModel::requestEditPadding,
                                     onDismissEdit = viewModel::dismissEditPadding,
                                     onSavePadding = viewModel::saveScheduledPadding,
+                                    onStorageForecast = viewModel::setStorageForecast,
                                 )
                             }
                             AppTab.Settings -> SettingsScreen(
@@ -243,6 +244,8 @@ class MainActivity : ComponentActivity() {
                             pending = pending,
                             rules = state.schedule.rules,
                             recordings = state.dvr.recordings,
+                            dvr = state.dvr,
+                            channels = state.channels,
                             nowMs = state.guideNowMs,
                             saving = state.schedule.saving,
                             error = state.schedule.error,

@@ -2,6 +2,7 @@ package net.etekweb.hdhrmeter.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -38,6 +39,10 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -77,8 +82,9 @@ fun DvrScreen(
     onEdit: () -> Unit,
     onDismissEdit: () -> Unit,
     onSavePadding: (Int, Int) -> Unit,
+    onStorageForecast: (Boolean) -> Unit,
 ) {
-    LaunchedEffect(Unit) { onEnsure() }
+    LaunchedEffect(Unit) { onEnsure(); onEnsureScheduled() }
     LaunchedEffect(state.dvr.section) {
         if (state.dvr.section == DvrSection.Scheduled) onEnsureScheduled()
     }
@@ -101,7 +107,7 @@ fun DvrScreen(
             )
         }
         else -> {
-            DvrBrowser(dvr, onSection, onRefresh, onRefreshScheduled, onOpen, onOpenScheduled)
+            DvrBrowser(dvr, state.channels, onSection, onRefresh, onRefreshScheduled, onOpen, onOpenScheduled, onStorageForecast)
         }
     }
     if (dvr.confirmDelete) {
@@ -133,12 +139,16 @@ fun DvrScreen(
 @Composable
 private fun DvrBrowser(
     dvr: DvrState,
+    channels: List<net.etekweb.hdhrmeter.data.Channel>,
     onSection: (DvrSection) -> Unit,
     onRefresh: () -> Unit,
     onRefreshScheduled: () -> Unit,
     onOpen: (String) -> Unit,
     onOpenScheduled: (String) -> Unit,
+    onStorageForecast: (Boolean) -> Unit,
 ) {
+    var showStorage by remember { mutableStateOf(false) }
+    if (showStorage) StorageDialog(dvr, channels, onStorageForecast) { showStorage = false }
     val scheduled = dvr.section == DvrSection.Scheduled
     val loading = if (scheduled) dvr.scheduledLoading else dvr.loading
     Scaffold(
@@ -155,7 +165,11 @@ private fun DvrBrowser(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             style = MaterialTheme.typography.labelLarge,
-                            modifier = Modifier.padding(end = 4.dp),
+                            modifier = Modifier.clickable(onClickLabel = "Show recording capacity") {
+                                showStorage = true
+                                onRefresh()
+                                onRefreshScheduled()
+                            }.padding(horizontal = 4.dp, vertical = 12.dp),
                         )
                     }
                     IconButton(

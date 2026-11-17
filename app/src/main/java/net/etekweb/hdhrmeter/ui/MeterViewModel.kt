@@ -239,6 +239,7 @@ enum class DvrSection { Recordings, Scheduled }
 
 /** Recordings from HDHomeRun DVR storage, and the future airings still on the schedule. */
 data class DvrState(
+    val storageForecastEnabled: Boolean = true,
     val section: DvrSection = DvrSection.Recordings,
     val recordings: List<Recording> = emptyList(),
     val loading: Boolean = false,
@@ -293,6 +294,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 overlayTab = overlayTabFromStored(store.loadOverlayTab()),
                 channelStretches = store.loadChannelStretches(),
                 hardwareDecode = store.loadHardwareDecode(),
+                dvr = DvrState(storageForecastEnabled = store.loadStorageForecast()),
             )
         },
     )
@@ -435,6 +437,11 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 _ui.update { it.copy(schedule = it.schedule.copy(loading = false)) }
             }
         }
+    }
+
+    fun setStorageForecast(enabled: Boolean) {
+        store.saveStorageForecast(enabled)
+        _ui.update { it.copy(dvr = it.dvr.copy(storageForecastEnabled = enabled)) }
     }
 
     /** Loads the DVR library the first time the tab is shown. */
@@ -1279,6 +1286,8 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
         ensureRecordingRules()
+        refreshRecordings()
+        refreshScheduled()
     }
 
     fun dismissRecording() {

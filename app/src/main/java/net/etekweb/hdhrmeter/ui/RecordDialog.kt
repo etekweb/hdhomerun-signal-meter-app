@@ -44,6 +44,10 @@ import net.etekweb.hdhrmeter.data.airingRecordStatus
 import net.etekweb.hdhrmeter.data.oneOffRuleFor
 import net.etekweb.hdhrmeter.data.recordingPadding
 import net.etekweb.hdhrmeter.data.splitPadding
+import net.etekweb.hdhrmeter.data.Channel
+import net.etekweb.hdhrmeter.data.PlannedRecording
+import net.etekweb.hdhrmeter.data.recordingSpaceForecast
+import net.etekweb.hdhrmeter.data.formatStorageAmount
 
 @Composable
 fun RecordProgramButton(
@@ -74,6 +78,8 @@ fun RecordConfirmDialog(
     pending: PendingRecording,
     rules: List<RecordingRule>,
     recordings: List<Recording>,
+    dvr: DvrState,
+    channels: List<Channel>,
     nowMs: Long,
     saving: Boolean,
     error: String?,
@@ -180,6 +186,27 @@ fun RecordConfirmDialog(
                     },
                 )
                 val message = localError ?: error
+                val padding = recordingPadding(earlyMin, earlySec, lateMin, lateSec) as? PaddingInput.Ready
+                if (padding != null) {
+                    val forecast = recordingSpaceForecast(
+                        dvr.scheduled, recordings, channels, System.currentTimeMillis(),
+                        PlannedRecording(pending.channelNumber, program.startEpochMs, program.stopEpochMs,
+                            padding.startSec, padding.endSec),
+                    )
+                    val space = dvr.storage
+                    if (space != null && forecast.bytes > space.freeBytes) {
+                        Text(
+                            "Storage warning: this recording plus existing scheduled and active recordings may need " +
+                                "${formatStorageAmount(forecast.bytes)}, but only ${formatStorageAmount(space.freeBytes)} is free " +
+                                "(about ${formatStorageAmount(forecast.bytes - space.freeBytes)} short).",
+                            color = Bad, style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(RECORDING_ESTIMATE_NOTE, color = Muted, style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (space == null) Text("Storage unavailable; recording space cannot be checked.",
+                        color = Amber, style = MaterialTheme.typography.bodySmall)
+                    ForecastAvailability(dvr, forecast.unknownDurations)
+                }
                 if (!message.isNullOrBlank()) {
                     Text(message, color = Bad, style = MaterialTheme.typography.bodySmall)
                 }

@@ -142,6 +142,12 @@ class DeviceStore(context: Context) {
         prefs.edit().putBoolean(KEY_HARDWARE_DECODE, enabled).apply()
     }
 
+    fun loadStorageForecast(): Boolean = prefs.getBoolean(KEY_STORAGE_FORECAST, true)
+
+    fun saveStorageForecast(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_STORAGE_FORECAST, enabled).apply()
+    }
+
     private fun recentChannelsKey(deviceId: String) = "$KEY_RECENT_CHANNELS$deviceId"
 
     private companion object {
@@ -156,6 +162,7 @@ class DeviceStore(context: Context) {
         const val KEY_OVERLAY_TAB = "overlay_tab"
         const val KEY_CHANNEL_STRETCH = "channel_stretch"
         const val KEY_HARDWARE_DECODE = "hardware_decode"
+        const val KEY_STORAGE_FORECAST = "storage_forecast"
         const val KEY_ID = "device_id"
         const val KEY_NAME = "device_name"
         const val KEY_MODEL = "device_model"
