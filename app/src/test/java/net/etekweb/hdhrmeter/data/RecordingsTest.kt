@@ -268,21 +268,21 @@ class RecordingsTest {
     @Test
     fun capacityReadsAsAvailableOverTotal() {
         val locale = Locale.US
-        assertEquals("0 B / 4 TB", formatStorageCapacity(StorageSpace(0, 4_000_000_000_000L), locale))
+        assertEquals("0 B free / 4 TB", formatStorageCapacity(StorageSpace(0, 4_000_000_000_000L), locale))
         assertEquals(
-            "1.36 TB / 4 TB",
+            "1.36 TB free / 4 TB",
             formatStorageCapacity(StorageSpace(1_360_000_000_000L, 4_000_000_000_000L), locale),
         )
         assertEquals(
-            "1.36 TB / 4 TB",
+            "1.36 TB free / 4 TB",
             formatStorageCapacity(StorageSpace(1_363_153_027_072L, 4_000_000_000_000L), locale),
         )
         assertEquals(
-            "842 GB / 1 TB",
+            "842 GB free / 1 TB",
             formatStorageCapacity(StorageSpace(842_000_000_000L, 1_000_000_000_000L), locale),
         )
         assertEquals(
-            "99.5 GB / 100 GB",
+            "99.5 GB free / 100 GB",
             formatStorageCapacity(StorageSpace(99_500_000_000L, 100_000_000_000L), locale),
         )
         assertEquals("1.5 KB", formatStorageAmount(1_500L, locale))
@@ -291,7 +291,7 @@ class RecordingsTest {
         assertNull(formatStorageCapacity(StorageSpace(5, 4), locale))
         assertNull(formatStorageCapacity(StorageSpace(-1, 100), locale))
         assertEquals(
-            "1,36 TB / 4 TB",
+            "1,36 TB free / 4 TB",
             formatStorageCapacity(StorageSpace(1_360_000_000_000L, 4_000_000_000_000L), Locale.GERMANY),
         )
     }
