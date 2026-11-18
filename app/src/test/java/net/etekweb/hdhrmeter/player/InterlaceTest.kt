@@ -1,7 +1,6 @@
 package net.etekweb.hdhrmeter.player
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -70,9 +69,15 @@ class InterlaceTest {
     }
 
     @Test(timeout = 15_000)
-    fun relayReportsInterlaceWithoutASecondConnection() {
+    fun timeshiftRelayReportsInterlace() = relayReportsInterlace(direct = false)
+
+    @Test(timeout = 15_000)
+    fun directRelayReportsInterlaceFromThePlayingStream() = relayReportsInterlace(direct = true)
+
+    private fun relayReportsInterlace(direct: Boolean) {
         val upstream = ServerSocket(0, 4, InetAddress.getByName("127.0.0.1"))
         upstream.soTimeout = 4_000
+        val stream = transport(0x02, mpeg2(progressive = false))
         val server = Thread {
             try {
                 val client = upstream.accept()
@@ -82,7 +87,7 @@ class InterlaceTest {
                     val head = "HTTP/1.1 200 OK\r\nContent-Type: video/mpeg\r\nConnection: close\r\n\r\n"
                     val output = it.getOutputStream()
                     output.write(head.toByteArray(Charsets.ISO_8859_1))
-                    output.write(transport(0x02, mpeg2(progressive = false)))
+                    output.write(stream)
                     output.flush()
                 }
             } catch (_: Exception) {
@@ -97,8 +102,13 @@ class InterlaceTest {
         relay.interlaceListener = { _, interlaced -> seen.set(interlaced) }
         try {
             val url = "http://127.0.0.1:${upstream.localPort}/auto/v2.1"
-            relay.arm(url, "bytes=0-", joinLive = true, requestedWallMs = 1_000L)
-            httpGet(relay.localUrl)
+            val local = if (direct) {
+                relay.armDirect(url)
+            } else {
+                relay.arm(url, "bytes=0-", joinLive = true, requestedWallMs = 1_000L)
+                relay.localUrl
+            }
+            assertTrue(httpGet(local).endsWith(stream.toString(Charsets.ISO_8859_1)))
             assertEquals(true, seen.get())
         } finally {
             relay.close()
@@ -107,15 +117,7 @@ class InterlaceTest {
         }
     }
 
-    @Test
-    fun loopbackPlaybackIsNotProbed() {
-        assertTrue(isLoopbackPlayUrl("http://127.0.0.1:34567/live"))
-        assertTrue(isLoopbackPlayUrl("http://localhost/live"))
-        assertTrue(isLoopbackPlayUrl("http://[::1]:9/live"))
-        assertFalse(isLoopbackPlayUrl("http://192.168.1.50:5004/auto/v2.1"))
-    }
-
-    private fun httpGet(url: String) {
+    private fun httpGet(url: String): String {
         val uri = URI(url)
         val socket = Socket()
         socket.soTimeout = 4_000
@@ -126,7 +128,7 @@ class InterlaceTest {
             val output = socket.getOutputStream()
             output.write(request.toByteArray(Charsets.ISO_8859_1))
             output.flush()
-            socket.getInputStream().readBytes()
+            return socket.getInputStream().readBytes().toString(Charsets.ISO_8859_1)
         } finally {
             runCatching { socket.close() }
         }

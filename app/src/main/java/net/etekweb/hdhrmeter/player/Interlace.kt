@@ -1,7 +1,6 @@
 package net.etekweb.hdhrmeter.player
 
 import java.io.ByteArrayOutputStream
-import java.net.URI
 
 /**
  * Interlacing comes from the bitstream, not the picture size.
@@ -21,12 +20,6 @@ internal fun interlacedTransport(bytes: ByteArray, length: Int = bytes.size): Bo
         H264_VIDEO -> h264Interlaced(elementary)
         else -> null
     }
-}
-
-internal fun isLoopbackPlayUrl(url: String): Boolean {
-    val host = runCatching { URI(url).host }.getOrNull() ?: return false
-    val bare = host.trim().removePrefix("[").removeSuffix("]").substringBefore('%')
-    return bare == "::1" || bare.equals("localhost", ignoreCase = true) || bare.startsWith("127.")
 }
 
 /** MPEG-2 sequence extension: progressive_sequence clear means the broadcast is interlaced. */

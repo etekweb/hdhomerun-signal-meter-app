@@ -122,7 +122,7 @@ internal fun probeTimeshift(url: String): TimeshiftProbe {
         return TimeshiftProbe(failure = StreamFailure("Could not open the stream.", null))
     }
     oldest.use { head ->
-        timeshiftFailure(head.status, head.headers, head.errorBody)?.let { return TimeshiftProbe(failure = it) }
+        liveStreamFailure(head.status, head.headers, head.errorBody)?.let { return TimeshiftProbe(failure = it) }
         val oldestByte = contentRangeStart(head.headers["content-range"]) ?: 0L
         val live = try {
             openTimeshift(url, "bytes=$TIMESHIFT_LIVE_BYTE-", stream = false)
@@ -130,7 +130,7 @@ internal fun probeTimeshift(url: String): TimeshiftProbe {
             return TimeshiftProbe(failure = StreamFailure("Could not open the stream.", null))
         }
         live.use { edge ->
-            timeshiftFailure(edge.status, edge.headers, edge.errorBody)?.let {
+            liveStreamFailure(edge.status, edge.headers, edge.errorBody)?.let {
                 return TimeshiftProbe(failure = it)
             }
             val liveByte = contentRangeStart(edge.headers["content-range"]) ?: oldestByte
@@ -143,7 +143,7 @@ internal fun probeTimeshift(url: String): TimeshiftProbe {
     }
 }
 
-internal fun timeshiftFailure(status: Int, headers: Map<String, String>, body: String): StreamFailure? {
+internal fun liveStreamFailure(status: Int, headers: Map<String, String>, body: String): StreamFailure? {
     if (status in 200..299) return null
     val code = hdhrErrorCode(headers.mapValues { listOf(it.value) }, body)
     val message = hdhrErrorMessage(code) ?: when (status) {
@@ -166,14 +166,19 @@ internal class TimeshiftSocket(
     }
 }
 
-internal fun openTimeshift(url: String, range: String?, stream: Boolean): TimeshiftSocket {
-    val endpoint = httpEndpoint(url) ?: throw java.io.IOException("The stream address could not be read.")
-    val socket = Socket()
+internal fun openTimeshift(
+    url: String,
+    range: String?,
+    stream: Boolean,
+    socket: Socket = Socket(),
+    direct: Boolean = false,
+): TimeshiftSocket {
     try {
+        val endpoint = httpEndpoint(url) ?: throw java.io.IOException("The stream address could not be read.")
         socket.connect(InetSocketAddress(endpoint.host, endpoint.port), 8_000)
-        socket.soTimeout = 8_000
+        socket.soTimeout = if (direct) 12_000 else 8_000
         val output = socket.getOutputStream()
-        output.write(requestBytes(endpoint, range, stream))
+        output.write(requestBytes(endpoint, range, stream, direct))
         output.flush()
         val head = readHttpHead(socket.getInputStream())
             ?: throw java.io.IOException("The stream did not answer.")
@@ -181,7 +186,7 @@ internal fun openTimeshift(url: String, range: String?, stream: Boolean): Timesh
             socket.soTimeout = 500
             readErrorBody(socket.getInputStream(), head.extra)
         } else {
-            if (stream) socket.soTimeout = 0
+            if (stream && !direct) socket.soTimeout = 0
             ""
         }
         return TimeshiftSocket(
@@ -218,14 +223,17 @@ internal fun httpEndpoint(url: String): HttpEndpoint? {
     }
 }
 
-private fun requestBytes(endpoint: HttpEndpoint, range: String?, stream: Boolean): ByteArray {
-    val host = if (endpoint.host.contains(':')) "[${endpoint.host}]" else endpoint.host
+private fun requestBytes(endpoint: HttpEndpoint, range: String?, stream: Boolean, direct: Boolean): ByteArray {
+    val bareHost = endpoint.host.removeSurrounding("[", "]")
+    val host = if (bareHost.contains(':')) "[$bareHost]" else bareHost
+    // A tuner request uses a close-delimited MPEG-TS body that the relay can forward directly.
+    val version = if (direct) "1.0" else "1.1"
     val text = buildString {
-        append("GET ${endpoint.path} HTTP/1.1\r\n")
+        append("GET ${endpoint.path} HTTP/$version\r\n")
         append("Host: $host:${endpoint.port}\r\n")
         append("User-Agent: HDHomeRunSignalMeter\r\n")
         append("Accept: */*\r\n")
-        append(if (stream) "Connection: keep-alive\r\n" else "Connection: close\r\n")
+        append(if (stream && !direct) "Connection: keep-alive\r\n" else "Connection: close\r\n")
         if (!range.isNullOrBlank()) append("Range: $range\r\n")
         append("\r\n")
     }
@@ -239,7 +247,7 @@ internal data class HttpHeadBytes(
 )
 
 /** Read and ignore a player request. The bytes after the header stay on [input]. */
-internal fun consumeHttpHeaders(input: InputStream, max: Int = 8192): Boolean {
+internal fun consumeHttpHeaders(input: InputStream, max: Int = 8192, expectedPath: String? = null): Boolean {
     val buffer = ByteArray(max)
     var size = 0
     while (size < max) {
@@ -251,7 +259,11 @@ internal fun consumeHttpHeaders(input: InputStream, max: Int = 8192): Boolean {
         if (read < 0) return false
         size += read
         val split = indexOfHeaderEnd(buffer, size)
-        if (split >= 0) return true
+        if (split >= 0) {
+            if (expectedPath == null) return true
+            val requestLine = buffer.decodeToString(0, split).substringBefore('\n')
+            return requestLine.split(' ').getOrNull(1) == expectedPath
+        }
     }
     return false
 }

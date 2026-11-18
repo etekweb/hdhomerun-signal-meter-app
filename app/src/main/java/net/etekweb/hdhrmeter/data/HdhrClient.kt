@@ -422,42 +422,6 @@ class HdhrClient(context: Context) {
         return parseTunerStatusText(response.body)
     }
 
-    /**
-     * Opens the stream only long enough to read an error status.
-     * A successful response is closed without reading the body, because an MPEG-TS stream does not end.
-     */
-    fun probeStream(url: String): StreamFailure? {
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 12_000
-            readTimeout = 8_000
-            instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "HDHomeRunSignalMeter")
-        }
-        try {
-            val code = connection.responseCode
-            if (code in 200..299) return null
-            val body = connection.errorStream?.use { stream ->
-                stream.readBytes().toString(Charsets.UTF_8)
-            }.orEmpty()
-            val headers = buildMap {
-                for ((key, value) in connection.headerFields) {
-                    if (key != null && value != null) put(key, value)
-                }
-            }
-            val hdhrCode = hdhrErrorCode(headers, body)
-            val message = hdhrErrorMessage(hdhrCode) ?: when (code) {
-                404 -> hdhrErrorMessage(801) ?: "The tuner does not know this channel."
-                503 -> "The tuner could not start this stream."
-                else -> "The tuner returned HTTP $code."
-            }
-            return StreamFailure(message, hdhrCode)
-        } catch (_: Exception) {
-            return StreamFailure("Could not open the stream.", null)
-        } finally {
-            connection.disconnect()
-        }
-    }
-
     fun localAddressToward(host: String): String? {
         return try {
             DatagramSocket().use { socket ->

@@ -26,6 +26,7 @@ class PlaybackShift : Closeable {
 
     val localUrl: String get() = relay.localUrl
     val active: Boolean get() = upstream != null
+    val directFailure get() = relay.snapshot.value.failure
 
     fun watchInterlace(token: () -> Int, listener: (Int, Boolean) -> Unit) {
         relay.interlaceToken = token
@@ -46,6 +47,9 @@ class PlaybackShift : Closeable {
         val generation = relay.arm(url, range, joinLive = true, requestedWallMs = edges.atMs)
         map.armHold(edges.atMs, generation)
     }
+
+    /** Direct live TV uses the same relay without a seekable record-engine session. */
+    fun beginDirect(url: String): String = relay.armDirect(url)
 
     fun stop() {
         upstream = null

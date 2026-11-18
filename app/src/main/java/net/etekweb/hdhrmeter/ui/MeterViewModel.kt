@@ -363,7 +363,10 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                     saveRecordingPosition()
                     releaseWifi()
                 }
-                _ui.update { it.copy(phase = phase.toPlaybackPhase()) }
+                _ui.update {
+                    if (phase == EnginePhase.Idle && it.phase == PlaybackPhase.Tuning) it
+                    else it.copy(phase = phase.toPlaybackPhase())
+                }
             }
         }
         viewModelScope.launch {
@@ -383,7 +386,8 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                     return@collect
                 }
                 val watch = screen as? Screen.Watch ?: return@collect
-                if (usingSpecificTuner && !autoRetried && error.hdhrCode == 804) {
+                val failure = shift.directFailure?.let(::playbackFailure) ?: error
+                if (usingSpecificTuner && !autoRetried && failure.hdhrCode == 804) {
                     autoRetried = true
                     tune(watch.device, watch.channel, transcode = _ui.value.transcoding, forceAuto = true)
                     return@collect
@@ -391,8 +395,8 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 stopPlayback()
                 _ui.update {
                     it.copy(
-                        playbackError = error.message,
-                        offerTranscode = error.offerTranscode && !it.transcoding,
+                        playbackError = failure.message,
+                        offerTranscode = failure.offerTranscode && !it.transcoding,
                         phase = PlaybackPhase.Idle,
                     )
                 }
@@ -2081,8 +2085,9 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         pollJob?.cancel()
         showClock = false
         directOn = false
-        engine.expectRestart()
+        engine.stop()
         shift.stop()
+        usingSpecificTuner = false
         acquireWifi()
         _ui.update {
             it.copy(
@@ -2127,19 +2132,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 shift.begin(shiftUrl, shifted)
                 shift.localUrl
             } else {
-                shift.stop()
-                val failure = withContext(Dispatchers.IO) { client.probeStream(prepared.url) }
-                if (generation != playGeneration) return@launch
-                if (failure != null) {
-                    if (prepared.tunerIndex != null && !autoRetried && failure.hdhrCode == 804) {
-                        autoRetried = true
-                        tune(device, channel, transcode = transcode, forceAuto = true)
-                        return@launch
-                    }
-                    showStreamFailure(failure)
-                    return@launch
-                }
-                prepared.url
+                shift.beginDirect(prepared.url)
             }
             // The record engine chooses its own tuner. The idle index captured
             // while the previous stream was still up is a spare, and polling it

@@ -16,10 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.Executors
-import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicInteger
 import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
@@ -105,14 +102,10 @@ class PlaybackEngine(context: Context) {
     private val commands = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "hdhr-playback").apply { isDaemon = true }
     }
-    private val scans = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "hdhr-scan").apply { isDaemon = true }
-    }
     private val commandGeneration = AtomicInteger(0)
     /** Each play() bumps this. An older queued start must not swallow the latest seek. */
     private val startSerial = AtomicInteger(0)
 
-    @Volatile private var scanConnection: HttpURLConnection? = null
     @Volatile private var hardwareRequested = false
     /** The choice used for the media that is open now, not a checkbox flipped mid-stream. */
     @Volatile private var openedWithHardware = false
@@ -157,13 +150,8 @@ class PlaybackEngine(context: Context) {
         // A seek closes the current HTTP socket. That looks like a playback failure
         // until the replacement stream is open. A fresh tune reports real failures.
         ignoreErrorUntilElapsed = if (keepPicture) SystemClock.elapsedRealtime() + 1_500 else 0L
-        if (keepPicture) {
-            _error.value = null
-        } else {
-            _error.value = null
-            _stats.value = VideoStats()
-            maybeScanInterlace(url, serial)
-        }
+        _error.value = null
+        if (!keepPicture) _stats.value = VideoStats()
         _phase.value = EnginePhase.Buffering
         _transport.update { it.copy(playing = wantPlaying) }
         enqueueStart(serial)
@@ -235,7 +223,6 @@ class PlaybackEngine(context: Context) {
         playingUrl = null
         wantPlaying = false
         startSerial.incrementAndGet()
-        scanConnection?.disconnect()
         abandonAudioFocus()
         val generation = commandGeneration.incrementAndGet()
         player?.let { mediaPlayer ->
@@ -262,8 +249,6 @@ class PlaybackEngine(context: Context) {
         detachInternal()
         abandonAudioFocus()
         startSerial.incrementAndGet()
-        scanConnection?.disconnect()
-        scans.shutdown()
         commandGeneration.incrementAndGet()
         commands.execute {
             val mediaPlayer = player
@@ -349,53 +334,6 @@ class PlaybackEngine(context: Context) {
         _stats.update { current ->
             if (serial != startSerial.get() || pendingUrl == null) current
             else current.copy(interlaced = interlaced)
-        }
-    }
-
-    private fun maybeScanInterlace(url: String, serial: Int) {
-        // The timeshift relay accepts one client. A second connection to it steals playback.
-        if (isLoopbackPlayUrl(url)) return
-        scanConnection?.disconnect()
-        try {
-            scans.execute {
-                if (serial != startSerial.get()) return@execute
-                val found = runCatching { readInterlace(url, serial) }.getOrNull() ?: return@execute
-                noteInterlaced(serial, found)
-            }
-        } catch (_: RejectedExecutionException) {
-            // release() already shut the scanner down.
-        }
-    }
-
-    private fun readInterlace(url: String, serial: Int): Boolean? {
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 2_500
-            readTimeout = 2_500
-            instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "HDHomeRunSignalMeter")
-        }
-        scanConnection = connection
-        return try {
-            if (serial != startSerial.get()) return null
-            if (connection.responseCode !in 200..299) return null
-            connection.inputStream.use { input ->
-                val buffer = ByteArray(SCAN_BYTES)
-                var filled = 0
-                var next = 128 * 1024
-                while (filled < buffer.size && serial == startSerial.get()) {
-                    val read = input.read(buffer, filled, buffer.size - filled)
-                    if (read < 0) break
-                    filled += read
-                    if (filled >= next || filled >= buffer.size) {
-                        interlacedTransport(buffer, filled)?.let { return it }
-                        next += 384 * 1024
-                    }
-                }
-                if (filled < 188 * 3) null else interlacedTransport(buffer, filled)
-            }
-        } finally {
-            connection.disconnect()
-            if (scanConnection === connection) scanConnection = null
         }
     }
 
@@ -493,7 +431,7 @@ class PlaybackEngine(context: Context) {
                 }
                 _phase.value = EnginePhase.Idle
                 _transport.update { it.copy(playing = false) }
-                _error.value = PlaybackFailure("Playback failed. The stream could not be decoded.")
+                _error.value = PlaybackFailure("Playback failed. The stream could not be played.")
             }
         }
     }
@@ -702,7 +640,6 @@ class PlaybackEngine(context: Context) {
 
     private companion object {
         const val TAG = "HdhrPlayback"
-        const val SCAN_BYTES = 2 * 1024 * 1024
     }
 }
 

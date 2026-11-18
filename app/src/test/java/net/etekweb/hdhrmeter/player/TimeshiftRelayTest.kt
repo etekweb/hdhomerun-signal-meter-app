@@ -8,6 +8,9 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URI
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class TimeshiftRelayTest {
     @Test(timeout = 15_000)
@@ -50,6 +53,75 @@ class TimeshiftRelayTest {
             relay.close()
             upstream.close()
             server.join(2_000)
+        }
+    }
+
+    @Test(timeout = 15_000)
+    fun directTuneRejectsAnOldPlayerRequestAndReportsTheTunerError() {
+        ServerSocket(0, 4, InetAddress.getByName("127.0.0.1")).use { upstream ->
+            upstream.soTimeout = 4_000
+            val worker = Executors.newSingleThreadExecutor()
+            try {
+                val request = worker.submit<String> {
+                    upstream.accept().use { client ->
+                        client.soTimeout = 3_000
+                        val headers = readUntilHeaders(client)
+                        val response = "HTTP/1.0 503 Service Unavailable\r\n" +
+                            "X-HDHomeRun-Error: 804\r\nContent-Length: 0\r\n\r\n"
+                        client.getOutputStream().write(response.toByteArray(Charsets.ISO_8859_1))
+                        headers
+                    }
+                }
+                TimeshiftRelay().use { relay ->
+                    val origin = "http://127.0.0.1:${upstream.localPort}"
+                    val oldUrl = relay.armDirect("$origin/tuner0/v2.1")
+                    val currentUrl = relay.armDirect("$origin/tuner0/v3.1")
+                    assertEquals("", httpGet(oldUrl))
+                    assertTrue(httpGet(currentUrl).startsWith("HTTP/1.0 502"))
+                    assertEquals(804, relay.snapshot.value.failure?.hdhrCode)
+                    assertTrue(request.get(4, TimeUnit.SECONDS).startsWith("GET /tuner0/v3.1 HTTP/1.0"))
+                }
+            } finally {
+                worker.shutdownNow()
+            }
+        }
+    }
+
+    @Test(timeout = 15_000)
+    fun changingChannelsClosesThePreviousTunerRequestEvenBeforeItAnswers() {
+        ServerSocket(0, 4, InetAddress.getByName("127.0.0.1")).use { upstream ->
+            upstream.soTimeout = 4_000
+            val worker = Executors.newFixedThreadPool(2)
+            try {
+                val firstRequest = CountDownLatch(1)
+                val released = worker.submit<Int> {
+                    val eof = upstream.accept().use { client ->
+                        client.soTimeout = 3_000
+                        readUntilHeaders(client)
+                        firstRequest.countDown()
+                        client.getInputStream().read()
+                    }
+                    upstream.accept().use { client ->
+                        client.soTimeout = 3_000
+                        readUntilHeaders(client)
+                        val response = "HTTP/1.0 200 OK\r\nContent-Type: video/mpeg\r\n\r\nNEXT"
+                        client.getOutputStream().write(response.toByteArray(Charsets.ISO_8859_1))
+                    }
+                    eof
+                }
+                TimeshiftRelay().use { relay ->
+                    val origin = "http://127.0.0.1:${upstream.localPort}"
+                    val oldUrl = relay.armDirect("$origin/tuner0/v2.1")
+                    val oldPlayback = worker.submit<String> { httpGet(oldUrl) }
+                    assertTrue(firstRequest.await(4, TimeUnit.SECONDS))
+                    val currentUrl = relay.armDirect("$origin/tuner0/v3.1")
+                    assertTrue(httpGet(currentUrl).endsWith("NEXT"))
+                    assertEquals("", oldPlayback.get(4, TimeUnit.SECONDS))
+                    assertEquals(-1, released.get(4, TimeUnit.SECONDS).toInt())
+                }
+            } finally {
+                worker.shutdownNow()
+            }
         }
     }
 

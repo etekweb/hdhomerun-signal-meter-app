@@ -1,14 +1,17 @@
 package net.etekweb.hdhrmeter.player
 
 import net.etekweb.hdhrmeter.data.TIMESHIFT_LIVE_BYTE
+import net.etekweb.hdhrmeter.data.StreamFailure
 import net.etekweb.hdhrmeter.data.consumeHttpHeaders
 import net.etekweb.hdhrmeter.data.contentRangeStart
+import net.etekweb.hdhrmeter.data.liveStreamFailure
 import net.etekweb.hdhrmeter.data.openTimeshift
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import java.io.Closeable
+import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -23,10 +26,11 @@ data class RelaySnapshot(
     val joinLive: Boolean = false,
     val requestedWallMs: Long = 0,
     val openedAtMs: Long = 0,
+    val failure: StreamFailure? = null,
 )
 
 /**
- * Local HTTP server in front of a record-engine timeshift URL.
+ * Local HTTP server for direct tuner streams and record-engine timeshift.
  *
  * LibVLC treats a live response with no length as not seekable. The record
  * engine seeks by closing the stream and opening it again with the same
@@ -39,10 +43,7 @@ class TimeshiftRelay : Closeable {
     private val lock = Any()
     private val generation = AtomicInteger()
     @Volatile private var running = true
-    private var upstreamUrl: String? = null
-    private var rangeHeader: String? = null
-    private var joinLive = false
-    private var requestedWallMs = 0L
+    private var armed: Armed? = null
     private var clientSocket: Socket? = null
     private var upstreamSocket: Socket? = null
     internal var interlaceToken: (() -> Int)? = null
@@ -63,24 +64,30 @@ class TimeshiftRelay : Closeable {
         }
     }
 
-    fun arm(url: String, range: String, joinLive: Boolean, requestedWallMs: Long): Int {
-        val gen = generation.incrementAndGet()
-        synchronized(lock) {
-            upstreamUrl = url
-            rangeHeader = range
-            this.joinLive = joinLive
-            this.requestedWallMs = requestedWallMs
-        }
-        _snapshot.value = RelaySnapshot(generation = gen)
-        closeActive()
-        return gen
+    fun arm(url: String, range: String, joinLive: Boolean, requestedWallMs: Long): Int =
+        armStream(url, range, joinLive, requestedWallMs)
+
+    fun armDirect(url: String): String {
+        val gen = armStream(url, range = null, joinLive = false, requestedWallMs = 0L)
+        return "$localUrl/$gen"
     }
 
+    private fun armStream(url: String, range: String?, joinLive: Boolean, requestedWallMs: Long): Int =
+        synchronized(lock) {
+            val gen = generation.incrementAndGet()
+            armed = Armed(url, range, joinLive, requestedWallMs, gen)
+            _snapshot.value = RelaySnapshot(generation = gen)
+            closeActive()
+            gen
+        }
+
     fun stopForwarding() {
-        synchronized(lock) { upstreamUrl = null }
-        generation.incrementAndGet()
-        _snapshot.value = RelaySnapshot()
-        closeActive()
+        synchronized(lock) {
+            armed = null
+            generation.incrementAndGet()
+            _snapshot.value = RelaySnapshot()
+            closeActive()
+        }
     }
 
     override fun close() {
@@ -112,23 +119,31 @@ class TimeshiftRelay : Closeable {
 
     private fun serve(client: Socket) {
         client.soTimeout = 8_000
-        if (!consumeHttpHeaders(client.getInputStream())) return
         val request = synchronized(lock) {
-            val url = upstreamUrl ?: return
-            Armed(url, rangeHeader, joinLive, requestedWallMs, generation.get())
+            val current = armed ?: return
+            clientSocket = client
+            current
         }
-        synchronized(lock) { clientSocket = client }
-        if (generation.get() != request.generation) return
-        val upstream = try {
-            openTimeshift(request.url, request.range, stream = true)
-        } catch (_: Exception) {
-            writeEmpty(client, 502)
-            return
-        }
-        synchronized(lock) { upstreamSocket = upstream.socket }
-        try {
+        val direct = request.range == null
+        val expectedPath = if (direct) "/live/${request.generation}" else "/live"
+        if (!consumeHttpHeaders(client.getInputStream(), expectedPath = expectedPath)) return
+        val token = interlaceToken?.invoke()
+        val socket = synchronized(lock) {
             if (generation.get() != request.generation) return
-            if (upstream.status !in 200..299) {
+            Socket().also { upstreamSocket = it }
+        }
+        try {
+            val upstream = try {
+                openTimeshift(request.url, request.range, stream = true, socket = socket, direct = direct)
+            } catch (_: IOException) {
+                publishFailure(request, StreamFailure("Could not connect to the HDHomeRun live stream.", null))
+                writeEmpty(client, 502)
+                return
+            }
+            if (generation.get() != request.generation) return
+            val failure = liveStreamFailure(upstream.status, upstream.headers, upstream.errorBody)
+            if (failure != null) {
+                publishFailure(request, failure)
                 writeEmpty(client, 502)
                 return
             }
@@ -144,8 +159,9 @@ class TimeshiftRelay : Closeable {
                 requestedWallMs = request.requestedWallMs,
                 openedAtMs = System.currentTimeMillis(),
             )
-            if (generation.get() != request.generation) return
-            _snapshot.value = opened
+            _snapshot.update { current ->
+                if (current.generation == request.generation) opened else current
+            }
             client.soTimeout = 0
             val output = client.getOutputStream()
             output.write(LOCAL_OK)
@@ -153,7 +169,6 @@ class TimeshiftRelay : Closeable {
             output.flush()
             // Sniff the bytes already on their way to the player. A second
             // connection to this relay would steal the only client.
-            val token = interlaceToken?.invoke()
             val listener = interlaceListener
             val sniff = if (token != null && listener != null) InterlaceSniff() else null
             val report: (Boolean) -> Unit = { interlaced ->
@@ -162,12 +177,12 @@ class TimeshiftRelay : Closeable {
                 }
             }
             if (upstream.extra.isNotEmpty()) sniff?.add(upstream.extra, upstream.extra.size, report)
-            copy(upstream.socket, output, request.generation, upstream.extra.size.toLong(), sniff, report)
+            copy(upstream.socket, output, request, upstream.extra.size.toLong(), sniff, report)
             sniff?.finish(report)
         } finally {
-            upstream.close()
+            runCatching { socket.close() }
             synchronized(lock) {
-                if (upstreamSocket === upstream.socket) upstreamSocket = null
+                if (upstreamSocket === socket) upstreamSocket = null
             }
         }
     }
@@ -175,7 +190,7 @@ class TimeshiftRelay : Closeable {
     private fun copy(
         upstream: Socket,
         output: java.io.OutputStream,
-        gen: Int,
+        request: Armed,
         already: Long,
         sniff: InterlaceSniff?,
         report: (Boolean) -> Unit,
@@ -184,9 +199,15 @@ class TimeshiftRelay : Closeable {
         val buffer = ByteArray(16 * 1024)
         var sent = already
         var published = already
+        val gen = request.generation
         try {
             while (running && generation.get() == gen) {
-                val read = input.read(buffer)
+                val read = try {
+                    input.read(buffer)
+                } catch (_: IOException) {
+                    publishFailure(request, StreamFailure("The live stream connection was interrupted.", null))
+                    break
+                }
                 if (read < 0) break
                 output.write(buffer, 0, read)
                 output.flush()
@@ -204,6 +225,13 @@ class TimeshiftRelay : Closeable {
         }
     }
 
+    private fun publishFailure(request: Armed, failure: StreamFailure) {
+        if (request.range != null) return
+        _snapshot.update { current ->
+            if (current.generation == request.generation) current.copy(failure = failure) else current
+        }
+    }
+
     private fun publishBytes(gen: Int, sent: Long) {
         _snapshot.update { current ->
             if (current.generation != gen || !current.opened) current
@@ -212,13 +240,10 @@ class TimeshiftRelay : Closeable {
     }
 
     private fun closeActive() {
-        val sockets = synchronized(lock) {
-            val open = listOfNotNull(clientSocket, upstreamSocket)
-            clientSocket = null
-            upstreamSocket = null
-            open
-        }
-        sockets.forEach { runCatching { it.close() } }
+        runCatching { clientSocket?.close() }
+        runCatching { upstreamSocket?.close() }
+        clientSocket = null
+        upstreamSocket = null
     }
 
     private fun writeEmpty(socket: Socket, code: Int) {
