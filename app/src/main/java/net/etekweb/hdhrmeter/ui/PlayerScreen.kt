@@ -1,8 +1,11 @@
 package net.etekweb.hdhrmeter.ui
 
+import android.content.res.Configuration
 import android.graphics.Rect
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,6 +19,8 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -24,6 +29,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
@@ -64,6 +70,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
@@ -71,7 +78,10 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.viewinterop.AndroidView
 import net.etekweb.hdhrmeter.data.AiringRecordStatus
 import net.etekweb.hdhrmeter.data.Channel
@@ -120,6 +130,9 @@ fun PlayerScreen(
     val recording = (state.screen as? Screen.PlayRecording)?.recording
     if (watch == null && recording == null) return
     val television = isTelevision()
+    val portraitPlayer = showChrome && !television &&
+        LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
+    val overlayVisible = showChrome && state.overlayVisible
     val tvFocus = remember { TvPlayerFocus() }
     val tv = if (television) tvFocus else null
     val corner = watch?.channel?.guideNumber
@@ -129,12 +142,48 @@ fun PlayerScreen(
         playingGuideNumber(state.screen),
         state.channelStretches,
     ).pictureScale()
-    Box(
+    BoxWithConstraints(
         Modifier
             .fillMaxSize()
             .background(Color.Black)
             .clipToBounds(),
     ) {
+        val portraitLayout = if (portraitPlayer) {
+            val insets = WindowInsets.safeDrawing.asPaddingValues()
+            val safeTop = insets.calculateTopPadding()
+            val safeHeight = (maxHeight - safeTop - insets.calculateBottomPadding()).coerceAtLeast(0.dp)
+            val videoWidth = state.video.width
+            val videoHeight = state.video.height
+            val aspect = if (videoWidth != null && videoWidth > 0 && videoHeight != null && videoHeight > 0) {
+                videoWidth.toFloat() / videoHeight
+            } else {
+                16f / 9f
+            }
+            val centeredHeight = minOf(maxWidth / aspect, maxHeight)
+            // Leave room for the tabs and transport when playing an unusually tall video.
+            val controlsHeight = minOf(260.dp, safeHeight / 2)
+            val raisedHeight = minOf(centeredHeight, (safeHeight - controlsHeight) / stretchY)
+            val raisedPictureHeight = raisedHeight * stretchY
+            val progress by animateFloatAsState(
+                targetValue = if (overlayVisible) 1f else 0f,
+                animationSpec = tween(durationMillis = 250),
+                label = "Portrait video position",
+            )
+            val height = lerp(centeredHeight, raisedHeight, progress)
+            val centerY = lerp(maxHeight / 2, safeTop + raisedPictureHeight / 2, progress)
+            val pictureHeight = height * stretchY
+            PortraitPlayerLayout(
+                videoHeight = height,
+                videoTop = centerY - height / 2,
+                pictureWidth = minOf(maxWidth, minOf(maxWidth, height * aspect) * stretchX),
+                pictureHeight = pictureHeight,
+                pictureTop = centerY - pictureHeight / 2,
+                raisedPictureHeight = raisedPictureHeight,
+                controlsOffset = centerY + pictureHeight / 2 - safeTop - raisedPictureHeight,
+            )
+        } else {
+            null
+        }
         AndroidView(
             factory = { context ->
                 val video = VLCVideoLayout(context)
@@ -170,8 +219,12 @@ fun PlayerScreen(
                 if (frame.scaleX != stretchX) frame.scaleX = stretchX
                 if (frame.scaleY != stretchY) frame.scaleY = stretchY
             },
-            modifier = Modifier
-                .fillMaxSize()
+            modifier = (portraitLayout?.let { layout ->
+                Modifier
+                    .offset { IntOffset(0, layout.videoTop.roundToPx()) }
+                    .fillMaxWidth()
+                    .height(layout.videoHeight)
+            } ?: Modifier.fillMaxSize())
                 .then(if (television) Modifier.focusProperties { canFocus = false } else Modifier)
                 .onGloballyPositioned { coordinates ->
                     val bounds = coordinates.boundsInWindow()
@@ -185,7 +238,18 @@ fun PlayerScreen(
                     )
                 },
         )
-        if (showChrome && state.overlayVisible) {
+        if (overlayVisible) {
+            if (portraitLayout != null) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .offset { IntOffset(0, portraitLayout.pictureTop.roundToPx()) }
+                        .width(portraitLayout.pictureWidth)
+                        .height(portraitLayout.pictureHeight)
+                        .clipToBounds()
+                        .noRippleClick(onClick = onToggleOverlay),
+                )
+            }
             SignalOverlay(
                 channel = watch?.channel,
                 recording = recording,
@@ -204,6 +268,7 @@ fun PlayerScreen(
                 onSkip = onSkip,
                 onRecord = onRecord,
                 tv = tv,
+                portraitLayout = portraitLayout,
             )
         } else if (showChrome) {
             val touchSlop = LocalViewConfiguration.current.touchSlop
@@ -258,6 +323,16 @@ fun PlayerScreen(
     }
 }
 
+private data class PortraitPlayerLayout(
+    val videoHeight: Dp,
+    val videoTop: Dp,
+    val pictureWidth: Dp,
+    val pictureHeight: Dp,
+    val pictureTop: Dp,
+    val raisedPictureHeight: Dp,
+    val controlsOffset: Dp,
+)
+
 @Composable
 private fun SignalOverlay(
     channel: Channel?,
@@ -277,13 +352,15 @@ private fun SignalOverlay(
     onSkip: (Long) -> Unit,
     onRecord: (String, String, GuideProgram) -> Unit,
     tv: TvPlayerFocus?,
+    portraitLayout: PortraitPlayerLayout?,
 ) {
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
-            .safeDrawingPadding(),
+            .safeDrawingPadding()
+            .then(if (portraitLayout != null) Modifier.clipToBounds() else Modifier),
     ) {
-        val sidePanel = maxWidth > maxHeight && maxWidth > 700.dp
+        val sidePanel = portraitLayout == null && maxWidth > maxHeight && maxWidth > 700.dp
         val program = if (channel != null) {
             state.guide?.airing(channel.guideNumber, channel.guideName, state.guideNowMs)
         } else {
@@ -319,7 +396,9 @@ private fun SignalOverlay(
         val overlayHeight = maxHeight
         val number = channel?.guideNumber ?: recording?.channelNumber?.trim().orEmpty()
         val name = channel?.guideName ?: recording?.title.orEmpty()
-        Box(Modifier.fillMaxSize().noRippleClick(onClick = onToggleOverlay, focusable = tv == null))
+        if (portraitLayout == null) {
+            Box(Modifier.fillMaxSize().noRippleClick(onClick = onToggleOverlay, focusable = tv == null))
+        }
         if (sidePanel) {
             Row(Modifier.fillMaxSize()) {
                 Column(Modifier.weight(1f).fillMaxHeight()) {
@@ -348,7 +427,14 @@ private fun SignalOverlay(
                 )
             }
         } else {
-            Column(Modifier.fillMaxSize()) {
+            val controlsModifier = if (portraitLayout != null) {
+                Modifier
+                    .offset { IntOffset(0, portraitLayout.controlsOffset.roundToPx()) }
+                    .padding(top = portraitLayout.raisedPictureHeight)
+            } else {
+                Modifier
+            }
+            Column(Modifier.fillMaxSize().then(controlsModifier)) {
                 ChannelHeader(number, name, onBack, television = tv != null)
                 BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
                     // Keep the channel buttons and any playback notice below a long description.
@@ -367,9 +453,11 @@ private fun SignalOverlay(
                             onSelectTab = onSelectTab,
                             onChannelStretch = onChannelStretch,
                             tv = tv,
-                            modifier = Modifier
-                                .heightIn(max = panelMax)
-                                .padding(horizontal = 12.dp),
+                            modifier = (if (portraitLayout != null) {
+                                Modifier.weight(1f)
+                            } else {
+                                Modifier.heightIn(max = panelMax)
+                            }).padding(horizontal = 12.dp),
                         )
                         NoticeBlock(
                             state,

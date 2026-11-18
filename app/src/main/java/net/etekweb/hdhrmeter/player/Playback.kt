@@ -1,6 +1,7 @@
 package net.etekweb.hdhrmeter.player
 
 import android.content.Context
+import android.content.res.Configuration
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioFocusRequest
@@ -11,6 +12,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
+import android.view.View
 import net.etekweb.hdhrmeter.data.StreamFailure
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -192,8 +194,10 @@ class PlaybackEngine(context: Context) {
         if (layout === attachedLayout) return
         detachInternal()
         try {
+            updateVideoOrientation(layout)
             mediaPlayer.attachViews(layout, null, false, true)
             mediaPlayer.videoScale = MediaPlayer.ScaleType.SURFACE_BEST_FIT
+            layout.addOnLayoutChangeListener(videoLayoutListener)
             attachedLayout = layout
         } catch (error: RuntimeException) {
             Log.e(TAG, "Could not attach the video surface", error)
@@ -337,8 +341,23 @@ class PlaybackEngine(context: Context) {
         }
     }
 
+    private val videoLayoutListener = View.OnLayoutChangeListener { view, _, _, _, _, _, _, _, _ ->
+        updateVideoOrientation(view)
+    }
+
+    private fun updateVideoOrientation(view: View) {
+        val configuration = view.resources.configuration
+        val television = configuration.uiMode and Configuration.UI_MODE_TYPE_MASK ==
+            Configuration.UI_MODE_TYPE_TELEVISION
+        // A portrait window can contain a wide viewport. Let VLC fit to that viewport as laid out.
+        player?.setUseOrientationFromBounds(
+            !television && configuration.orientation == Configuration.ORIENTATION_PORTRAIT,
+        )
+    }
+
     private fun detachInternal() {
-        if (attachedLayout == null) return
+        val layout = attachedLayout ?: return
+        layout.removeOnLayoutChangeListener(videoLayoutListener)
         runCatching { player?.detachViews() }
         attachedLayout = null
     }
