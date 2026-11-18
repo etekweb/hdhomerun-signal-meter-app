@@ -198,8 +198,9 @@ data class UiState(
     val dvr: DvrState = DvrState(),
     val schedule: ScheduleState = ScheduleState(),
     val playbackClock: PlaybackClock = PlaybackClock(),
-    /** Software decoding unless the Settings checkbox is on. */
+    /** Software decoding unless the hardware decoding setting is enabled. */
     val hardwareDecode: Boolean = false,
+    val showChannelNumber: Boolean = false,
 )
 
 /**
@@ -294,6 +295,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 overlayTab = overlayTabFromStored(store.loadOverlayTab()),
                 channelStretches = store.loadChannelStretches(),
                 hardwareDecode = store.loadHardwareDecode(),
+                showChannelNumber = store.loadShowChannelNumber(),
                 dvr = DvrState(storageForecastEnabled = store.loadStorageForecast()),
             )
         },
@@ -907,6 +909,11 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         store.saveHardwareDecode(enabled)
         _ui.update { it.copy(hardwareDecode = enabled) }
         engine.setHardwareDecode(enabled)
+    }
+
+    fun setShowChannelNumber(enabled: Boolean) {
+        store.saveShowChannelNumber(enabled)
+        _ui.update { it.copy(showChannelNumber = enabled) }
     }
 
     fun setManualHost(value: String) {

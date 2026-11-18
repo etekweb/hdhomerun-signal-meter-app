@@ -301,6 +301,7 @@ class MainActivity : ComponentActivity() {
                                 onSelectGuide = viewModel::selectGuideSource,
                                 onRemoveGuide = viewModel::removeGuideSource,
                                 onHardwareDecode = viewModel::setHardwareDecode,
+                                onShowChannelNumber = viewModel::setShowChannelNumber,
                             )
                         }
                     }

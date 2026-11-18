@@ -296,14 +296,16 @@ fun PlayerScreen(
                         }
                     },
             ) {
-                Text(
-                    corner,
-                    color = Color.White.copy(alpha = 0.86f),
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .safeDrawingPadding()
-                        .padding(16.dp),
-                )
+                if (state.showChannelNumber) {
+                    Text(
+                        corner,
+                        color = Color.White.copy(alpha = 0.86f),
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .safeDrawingPadding()
+                            .padding(16.dp),
+                    )
+                }
             }
         }
         if (showChrome) {

@@ -142,6 +142,12 @@ class DeviceStore(context: Context) {
         prefs.edit().putBoolean(KEY_HARDWARE_DECODE, enabled).apply()
     }
 
+    fun loadShowChannelNumber(): Boolean = prefs.getBoolean(KEY_SHOW_CHANNEL_NUMBER, false)
+
+    fun saveShowChannelNumber(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_SHOW_CHANNEL_NUMBER, enabled).apply()
+    }
+
     fun loadStorageForecast(): Boolean = prefs.getBoolean(KEY_STORAGE_FORECAST, true)
 
     fun saveStorageForecast(enabled: Boolean) {
@@ -162,6 +168,7 @@ class DeviceStore(context: Context) {
         const val KEY_OVERLAY_TAB = "overlay_tab"
         const val KEY_CHANNEL_STRETCH = "channel_stretch"
         const val KEY_HARDWARE_DECODE = "hardware_decode"
+        const val KEY_SHOW_CHANNEL_NUMBER = "show_channel_number"
         const val KEY_STORAGE_FORECAST = "storage_forecast"
         const val KEY_ID = "device_id"
         const val KEY_NAME = "device_name"
