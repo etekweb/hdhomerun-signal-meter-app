@@ -3,6 +3,7 @@ package net.etekweb.hdhrmeter.player
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
@@ -48,7 +49,14 @@ enum class EnginePhase {
     Idle,
     Buffering,
     Ready,
-    Ended,
+    Ended;
+
+    internal fun afterBuffering(percent: Float, playing: Boolean): EnginePhase = when {
+        this == Idle || this == Ended -> this
+        percent < 100f -> Buffering
+        playing -> Ready
+        else -> this
+    }
 }
 
 data class PlaybackFailure(
@@ -67,6 +75,20 @@ data class PlayerTransport(
 
 class PlaybackEngine(context: Context) {
     private val appContext = context.applicationContext
+    private val audioManager = appContext.getSystemService(AudioManager::class.java)
+    private val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+        .setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                .build(),
+        )
+        .setWillPauseWhenDucked(true)
+        .setOnAudioFocusChangeListener { change ->
+            if (change < 0 && pendingUrl != null) pause()
+        }
+        .build()
+    private var hasAudioFocus = false
     private val _stats = MutableStateFlow(VideoStats())
     private val _phase = MutableStateFlow(EnginePhase.Idle)
     private val _error = MutableStateFlow<PlaybackFailure?>(null)
@@ -130,7 +152,7 @@ class PlaybackEngine(context: Context) {
             return
         }
         pendingUrl = url
-        wantPlaying = true
+        wantPlaying = requestAudioFocus()
         val serial = startSerial.incrementAndGet()
         // A seek closes the current HTTP socket. That looks like a playback failure
         // until the replacement stream is open. A fresh tune reports real failures.
@@ -143,9 +165,8 @@ class PlaybackEngine(context: Context) {
             maybeScanInterlace(url, serial)
         }
         _phase.value = EnginePhase.Buffering
-        _transport.update { it.copy(playing = true) }
-        runCatching { mediaPlayer.volume = 100 }
-        enqueueStart(serial, force = true)
+        _transport.update { it.copy(playing = wantPlaying) }
+        enqueueStart(serial)
     }
 
     /** The next socket close is a seek or a channel change, not a failure. */
@@ -156,6 +177,7 @@ class PlaybackEngine(context: Context) {
     fun pause() {
         wantPlaying = false
         _transport.update { it.copy(playing = false) }
+        abandonAudioFocus()
         val generation = commandGeneration.get()
         val mediaPlayer = player ?: return
         commands.execute {
@@ -165,6 +187,7 @@ class PlaybackEngine(context: Context) {
     }
 
     fun resumePlayback() {
+        if (pendingUrl == null || !requestAudioFocus()) return
         wantPlaying = true
         _transport.update { it.copy(playing = true) }
         val generation = commandGeneration.get()
@@ -184,7 +207,6 @@ class PlaybackEngine(context: Context) {
             mediaPlayer.attachViews(layout, null, false, true)
             mediaPlayer.videoScale = MediaPlayer.ScaleType.SURFACE_BEST_FIT
             attachedLayout = layout
-            enqueueStart(startSerial.get(), force = false)
         } catch (error: RuntimeException) {
             Log.e(TAG, "Could not attach the video surface", error)
             attachedLayout = null
@@ -196,6 +218,16 @@ class PlaybackEngine(context: Context) {
     fun detach(layout: VLCVideoLayout) {
         if (layout !== attachedLayout) return
         detachInternal()
+        val generation = commandGeneration.get()
+        val mediaPlayer = player ?: return
+        disableVideoWithoutSurface(mediaPlayer)
+        commands.execute {
+            if (generation != commandGeneration.get() || attachedLayout != null) return@execute
+            // The initial play can be waiting for a video surface that just went away.
+            if (playingUrl != null && wantPlaying && _phase.value == EnginePhase.Buffering && !mediaPlayer.isPlaying) {
+                runCatching { mediaPlayer.play() }
+            }
+        }
     }
 
     fun stop() {
@@ -204,9 +236,7 @@ class PlaybackEngine(context: Context) {
         wantPlaying = false
         startSerial.incrementAndGet()
         scanConnection?.disconnect()
-        // Drop the surface on this thread, before the slow input shutdown, so
-        // disposing the picture does not wait on the tuner socket.
-        detachInternal()
+        abandonAudioFocus()
         val generation = commandGeneration.incrementAndGet()
         player?.let { mediaPlayer ->
             // Silence on this thread so the sound ends with the tap. Closing the
@@ -229,6 +259,8 @@ class PlaybackEngine(context: Context) {
     fun release() {
         pendingUrl = null
         playingUrl = null
+        detachInternal()
+        abandonAudioFocus()
         startSerial.incrementAndGet()
         scanConnection?.disconnect()
         scans.shutdown()
@@ -242,6 +274,7 @@ class PlaybackEngine(context: Context) {
             runCatching { mediaPlayer?.release() }
             runCatching { lib?.release() }
         }
+        commands.shutdown()
     }
 
     private fun openLibVlc(): Pair<LibVLC, MediaPlayer> {
@@ -259,26 +292,24 @@ class PlaybackEngine(context: Context) {
         return library to MediaPlayer(library)
     }
 
-    private fun enqueueStart(serial: Int, force: Boolean) {
+    private fun enqueueStart(serial: Int) {
         val generation = commandGeneration.get()
         val mediaPlayer = player ?: return
         commands.execute {
             if (generation != commandGeneration.get()) return@execute
             if (serial != startSerial.get()) return@execute
-            startLocked(mediaPlayer, generation, serial, force)
+            startLocked(mediaPlayer, generation, serial)
         }
     }
 
-    private fun startLocked(mediaPlayer: MediaPlayer, generation: Int, serial: Int, force: Boolean) {
+    private fun startLocked(mediaPlayer: MediaPlayer, generation: Int, serial: Int) {
         val library = lib ?: return
         val url = pendingUrl ?: return
-        if (attachedLayout == null) return
         if (generation != commandGeneration.get() || serial != startSerial.get()) return
-        if (!force && playingUrl == url && mediaPlayer.isPlaying && wantPlaying) return
         ignoreNextStop = true
         mediaPlayer.stop()
         if (generation != commandGeneration.get() || serial != startSerial.get()) return
-        runCatching { mediaPlayer.volume = 100 }
+        runCatching { mediaPlayer.volume = if (wantPlaying) 100 else 0 }
         // 5.1 passthrough and 6-channel PCM stay silent on Android TV. Stereo PCM plays.
         runCatching { mediaPlayer.setAudioOutputDevice("stereo") }
         val media = Media(library, Uri.parse(url))
@@ -374,6 +405,26 @@ class PlaybackEngine(context: Context) {
         attachedLayout = null
     }
 
+    private fun disableVideoWithoutSurface(mediaPlayer: MediaPlayer) {
+        if (pendingUrl == null || attachedLayout != null) return
+        runCatching {
+            if (mediaPlayer.videoTrack >= 0) mediaPlayer.setVideoTrackEnabled(false)
+        }
+    }
+
+    private fun requestAudioFocus(): Boolean {
+        if (!hasAudioFocus) {
+            hasAudioFocus = audioManager.requestAudioFocus(focusRequest) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        }
+        return hasAudioFocus
+    }
+
+    private fun abandonAudioFocus() {
+        if (!hasAudioFocus) return
+        hasAudioFocus = false
+        audioManager.abandonAudioFocusRequest(focusRequest)
+    }
+
     private fun onPlayerEvent(event: MediaPlayer.Event) {
         val mediaPlayer = player ?: return
         when (event.type) {
@@ -382,22 +433,33 @@ class PlaybackEngine(context: Context) {
                 _transport.update { it.copy(mediaTimeMs = 0) }
             }
             MediaPlayer.Event.Buffering -> {
-                if (event.buffering < 100f) {
-                    _phase.value = EnginePhase.Buffering
-                }
+                // LibVLC can report a full cache without sending another Playing event.
+                val percent = event.buffering
+                val playing = percent >= 100f && wantPlaying && mediaPlayer.isPlaying
+                _phase.update { it.afterBuffering(percent, playing) }
                 publishTracks(mediaPlayer)
             }
-            MediaPlayer.Event.Playing,
+            MediaPlayer.Event.Playing -> {
+                if (pendingUrl == null) return
+                _phase.value = EnginePhase.Ready
+                noteTransport(mediaPlayer, playing = wantPlaying)
+                disableVideoWithoutSurface(mediaPlayer)
+                publishTracks(mediaPlayer)
+            }
             MediaPlayer.Event.Vout,
             MediaPlayer.Event.ESSelected,
             -> {
-                _phase.value = EnginePhase.Ready
-                noteTransport(mediaPlayer, playing = true)
+                disableVideoWithoutSurface(mediaPlayer)
                 publishTracks(mediaPlayer)
             }
             MediaPlayer.Event.Paused -> noteTransport(mediaPlayer, playing = false)
             MediaPlayer.Event.TimeChanged -> {
-                _transport.update { it.copy(mediaTimeMs = mediaPlayer.time.coerceAtLeast(0)) }
+                if (pendingUrl == null) return
+                val time = event.timeChanged.coerceAtLeast(0)
+                if (wantPlaying && time > _transport.value.mediaTimeMs) {
+                    _phase.update { if (it == EnginePhase.Buffering) EnginePhase.Ready else it }
+                }
+                _transport.update { it.copy(mediaTimeMs = time) }
                 publishTracks(mediaPlayer)
             }
             MediaPlayer.Event.Stopped -> {
@@ -413,6 +475,7 @@ class PlaybackEngine(context: Context) {
             MediaPlayer.Event.EndReached -> {
                 ignoreNextStop = false
                 playingUrl = null
+                abandonAudioFocus()
                 if (pendingUrl == null) {
                     _phase.value = EnginePhase.Idle
                     return

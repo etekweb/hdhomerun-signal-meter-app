@@ -1085,6 +1085,9 @@ private fun Transport(
 ) {
     val clock = state.playbackClock
     val file = state.screen is Screen.PlayRecording
+    val loading = state.playbackError == null && !state.tunerReleased &&
+        (state.phase == PlaybackPhase.Tuning ||
+            (state.phase == PlaybackPhase.Buffering && (!clock.active || clock.playing)))
     val enabledStops = enabledTransportStopsFor(state)
     val controls = enabledStops.isNotEmpty()
     val entryTab = overlayTabsFor(file).first()
@@ -1157,7 +1160,7 @@ private fun Transport(
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 when {
                     state.playbackError != null || state.tunerReleased -> Unit
-                    state.phase == PlaybackPhase.Tuning || state.phase == PlaybackPhase.Buffering -> {
+                    loading -> {
                         CircularProgressIndicator(
                             modifier = Modifier.height(18.dp).width(18.dp),
                             strokeWidth = 2.dp,
@@ -1177,9 +1180,7 @@ private fun Transport(
             }
             ChannelStepButton("CH +", television = tv != null) { onStep(1) }
         }
-        if (file && state.playbackError == null && !state.tunerReleased &&
-            (state.phase == PlaybackPhase.Tuning || state.phase == PlaybackPhase.Buffering)
-        ) {
+        if (file && loading) {
             Row(
                 Modifier.fillMaxWidth().padding(top = 4.dp),
                 horizontalArrangement = Arrangement.Center,

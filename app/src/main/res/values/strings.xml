@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">HDHR Meter</string>
+    <string name="media_playback">Media playback</string>
+    <string name="media_play">Play</string>
+    <string name="media_pause">Pause</string>
+    <string name="media_stop">Stop playback</string>
+    <string name="media_audio_only">Listen in background</string>
 </resources>

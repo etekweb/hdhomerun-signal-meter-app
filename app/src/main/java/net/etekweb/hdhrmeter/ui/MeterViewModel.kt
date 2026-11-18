@@ -304,6 +304,8 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private var recordingJob: Job? = null
     private var recordingGeneration = 0
     private var resumeSaveGeneration = 0
+    internal var recordingPositionSave: Job? = null
+        private set
     private var scheduledJob: Job? = null
     private var scheduledGeneration = 0
     private var dvrActionJob: Job? = null
@@ -357,6 +359,10 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             engine.phase.collect { phase ->
+                if (phase == EnginePhase.Ended && _ui.value.screen is Screen.PlayRecording) {
+                    saveRecordingPosition()
+                    releaseWifi()
+                }
                 _ui.update { it.copy(phase = phase.toPlaybackPhase()) }
             }
         }
@@ -366,6 +372,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 val screen = _ui.value.screen
                 if (screen is Screen.PlayRecording) {
                     if (error.ended) return@collect
+                    stopPlayback()
                     _ui.update {
                         it.copy(
                             playbackError = error.message,
@@ -381,6 +388,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                     tune(watch.device, watch.channel, transcode = _ui.value.transcoding, forceAuto = true)
                     return@collect
                 }
+                stopPlayback()
                 _ui.update {
                     it.copy(
                         playbackError = error.message,
@@ -1576,8 +1584,20 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun togglePlayback() {
-        if (!showClock || _ui.value.playbackError != null || _ui.value.tunerReleased) return
-        if (engine.transport.value.playing) engine.pause() else engine.resumePlayback()
+        setPlaybackPlaying(!engine.transport.value.playing)
+    }
+
+    fun setPlaybackPlaying(playing: Boolean) {
+        val state = _ui.value
+        if (!showClock || state.playbackError != null || state.tunerReleased) return
+        if (playing == engine.transport.value.playing) return
+        if (playing && engine.phase.value == EnginePhase.Ended) {
+            val recording = (state.screen as? Screen.PlayRecording)?.recording ?: return
+            startRecording(recording.copy(resumeSec = null))
+        } else {
+            if (playing) engine.resumePlayback() else engine.pause()
+            publishClock()
+        }
     }
 
     /** Beginning of the show, or the oldest buffered moment when the opening is already gone. */
@@ -2160,6 +2180,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun showStreamFailure(failure: StreamFailure) {
         val playback = playbackFailure(failure)
+        stopPlayback()
         _ui.update {
             it.copy(
                 playbackError = playback.message,
@@ -2372,7 +2393,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
      * Writes the frame on screen to the record engine.
      * A position already stored is left alone. A failed write puts the previous value back.
      */
-    private fun saveRecordingPosition() {
+    fun saveRecordingPosition() {
         val screen = _ui.value.screen as? Screen.PlayRecording ?: return
         val clock = _ui.value.playbackClock
         if (!clock.active) return
@@ -2390,7 +2411,9 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         val recordingId = screen.recording.id
         val generation = ++resumeSaveGeneration
         applyRecordingResume(recordingId, resume)
-        viewModelScope.launch(Dispatchers.IO) {
+        val previousSave = recordingPositionSave
+        recordingPositionSave = viewModelScope.launch(Dispatchers.IO) {
+            previousSave?.join()
             val saved = runCatching { client.setRecordingResume(cmd, resume) }.isSuccess
             if (generation != resumeSaveGeneration) return@launch
             if (saved) return@launch
