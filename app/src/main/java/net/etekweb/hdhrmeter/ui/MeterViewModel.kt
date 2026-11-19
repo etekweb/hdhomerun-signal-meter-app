@@ -1541,13 +1541,14 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         store.saveOverlayTab(tab.name)
     }
 
-    /** Saves stretch for the channel on screen. Turning it off keeps the slider positions. */
-    fun setChannelStretch(stretch: ChannelStretch) {
-        val key = channelStretchKey(playingGuideNumber(_ui.value.screen)) ?: return
-        val next = stretch.normalized()
-        val current = _ui.value.channelStretches[key]?.normalized() ?: ChannelStretch()
+    /** Updates the stored stretch for the channel on screen. */
+    fun updateChannelStretch(update: (ChannelStretch) -> ChannelStretch) {
+        val state = _ui.value
+        val key = channelStretchKey(playingGuideNumber(state.screen)) ?: return
+        val current = state.channelStretches[key]?.normalized() ?: ChannelStretch()
+        val next = update(current).normalized()
         if (next == current) return
-        val updated = _ui.value.channelStretches + (key to next)
+        val updated = state.channelStretches + (key to next)
         store.saveChannelStretches(updated)
         _ui.update { it.copy(channelStretches = updated) }
     }

@@ -2,6 +2,7 @@ package net.etekweb.hdhrmeter.ui
 
 import android.content.res.Configuration
 import android.view.KeyEvent
+import net.etekweb.hdhrmeter.data.ChannelStretch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -42,6 +43,17 @@ class PlayerRemoteTest {
                 ),
             )
         }
+    }
+
+    @Test
+    fun stretchArrowsAdjustOneAxisByOnePercentagePoint() {
+        val stretch = ChannelStretch(enabled = true, widthPercent = 110, heightPercent = 90)
+        assertEquals(stretch.copy(heightPercent = 91), playerStretchAdjustment(KeyEvent.KEYCODE_DPAD_UP)?.invoke(stretch))
+        assertEquals(stretch.copy(heightPercent = 89), playerStretchAdjustment(KeyEvent.KEYCODE_DPAD_DOWN)?.invoke(stretch))
+        assertEquals(stretch.copy(widthPercent = 111), playerStretchAdjustment(KeyEvent.KEYCODE_DPAD_RIGHT)?.invoke(stretch))
+        assertEquals(stretch.copy(widthPercent = 109), playerStretchAdjustment(KeyEvent.KEYCODE_DPAD_LEFT)?.invoke(stretch))
+        assertNull(playerStretchAdjustment(KeyEvent.KEYCODE_DPAD_CENTER))
+        assertNull(playerStretchAdjustment(KeyEvent.KEYCODE_BACK))
     }
 
     @Test

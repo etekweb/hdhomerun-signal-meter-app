@@ -4,6 +4,7 @@ import android.content.res.Configuration
 import android.graphics.Rect
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -64,8 +65,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.nativeKeyCode
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.boundsInWindow
@@ -112,7 +121,7 @@ fun PlayerScreen(
     onDetach: (VLCVideoLayout) -> Unit,
     onToggleOverlay: () -> Unit,
     onSelectOverlayTab: (OverlayTab) -> Unit,
-    onChannelStretch: (ChannelStretch) -> Unit,
+    onChannelStretch: ((ChannelStretch) -> ChannelStretch) -> Unit,
     onBack: () -> Unit,
     onStep: (Int) -> Unit,
     onTranscode: () -> Unit,
@@ -215,7 +224,7 @@ fun PlayerScreen(
             },
             update = { frame ->
                 // Scale the drawn picture around its center. 1 leaves that side alone.
-                // The sliders stay stored when stretch is off, and this stays at 1.
+                // The percentages stay stored when stretch is off, and this stays at 1.
                 if (frame.scaleX != stretchX) frame.scaleX = stretchX
                 if (frame.scaleY != stretchY) frame.scaleY = stretchY
             },
@@ -342,7 +351,7 @@ private fun SignalOverlay(
     state: UiState,
     onToggleOverlay: () -> Unit,
     onSelectTab: (OverlayTab) -> Unit,
-    onChannelStretch: (ChannelStretch) -> Unit,
+    onChannelStretch: ((ChannelStretch) -> ChannelStretch) -> Unit,
     onBack: () -> Unit,
     onStep: (Int) -> Unit,
     onTranscode: () -> Unit,
@@ -628,7 +637,7 @@ private fun OverlayPanel(
     onRecord: (() -> Unit)?,
     recordBusy: Boolean,
     onSelectTab: (OverlayTab) -> Unit,
-    onChannelStretch: (ChannelStretch) -> Unit,
+    onChannelStretch: ((ChannelStretch) -> ChannelStretch) -> Unit,
     tv: TvPlayerFocus?,
     modifier: Modifier = Modifier,
 ) {
@@ -676,6 +685,7 @@ private fun OverlayPanel(
                             state.channelStretches,
                         ),
                         onStretch = onChannelStretch,
+                        television = tv != null,
                     )
                     OverlayTab.Info -> if (recording != null) {
                         RecordingInfo(recording, program)
@@ -758,10 +768,11 @@ private fun OverlayTabs(
 private fun PlaybackStretchPanel(
     guideNumber: String?,
     stretch: ChannelStretch,
-    onStretch: (ChannelStretch) -> Unit,
+    onStretch: ((ChannelStretch) -> ChannelStretch) -> Unit,
+    television: Boolean,
 ) {
-    val key = channelStretchKey(guideNumber)
-    if (key == null) {
+    val stretchKey = channelStretchKey(guideNumber)
+    if (stretchKey == null) {
         Text(
             "This picture has no channel number, so a stretch can't be saved for it.",
             color = Muted,
@@ -769,6 +780,8 @@ private fun PlaybackStretchPanel(
         )
         return
     }
+    val switchInteraction = remember { MutableInteractionSource() }
+    val switchFocused by switchInteraction.collectIsFocusedAsState()
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -776,11 +789,13 @@ private fun PlaybackStretchPanel(
     ) {
         Column(Modifier.weight(1f).padding(end = 12.dp)) {
             Text("Apply stretch", color = Paper, style = MaterialTheme.typography.titleMedium)
-            Text("Channel $key", color = Muted, style = MaterialTheme.typography.bodySmall)
+            Text("Channel $stretchKey", color = Muted, style = MaterialTheme.typography.bodySmall)
         }
         Switch(
             checked = stretch.enabled,
-            onCheckedChange = { enabled -> onStretch(stretch.copy(enabled = enabled)) },
+            onCheckedChange = { enabled -> onStretch { it.copy(enabled = enabled) } },
+            modifier = Modifier.tvFocusBorder(television && switchFocused),
+            interactionSource = switchInteraction,
             colors = SwitchDefaults.colors(
                 checkedThumbColor = Ink,
                 checkedTrackColor = Amber,
@@ -789,6 +804,14 @@ private fun PlaybackStretchPanel(
                 uncheckedBorderColor = Color(0xFF3A4550),
             ),
         )
+    }
+    if (television) {
+        if (stretch.enabled) {
+            key(stretchKey) {
+                TelevisionStretchEditor(stretch = stretch, onStretch = onStretch)
+            }
+        }
+        return
     }
     Text(
         if (stretch.enabled) {
@@ -807,27 +830,71 @@ private fun PlaybackStretchPanel(
     StretchSlider(
         label = "Width",
         percent = stretch.widthPercent,
-        onChange = { percent -> onStretch(stretch.copy(widthPercent = percent)) },
+        onChange = { percent -> onStretch { it.copy(widthPercent = percent) } },
     )
     StretchSlider(
         label = "Height",
         percent = stretch.heightPercent,
-        onChange = { percent -> onStretch(stretch.copy(heightPercent = percent)) },
+        onChange = { percent -> onStretch { it.copy(heightPercent = percent) } },
     )
+}
+
+@Composable
+private fun TelevisionStretchEditor(
+    stretch: ChannelStretch,
+    onStretch: ((ChannelStretch) -> ChannelStretch) -> Unit,
+) {
+    var editing by remember { mutableStateOf(false) }
+    val editButton = remember { FocusRequester() }
+    BackHandler(enabled = editing) { editing = false }
+
+    StretchPercentage("Width", stretch.widthPercent)
+    StretchPercentage("Height", stretch.heightPercent)
+    Column(Modifier.fillMaxWidth()) {
+        if (editing) {
+            Text(
+                "Up/Down adjusts height. Left/Right adjusts width. Press Back to finish.",
+                color = Muted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        PlaybackTextButton(
+            label = if (editing) "Editing stretch" else "Edit stretch",
+            enabled = true,
+            television = true,
+            onClick = { editing = editButton.requestFocus() },
+            modifier = Modifier
+                .align(Alignment.End)
+                .focusRequester(editButton)
+                .onFocusChanged { if (!it.isFocused) editing = false }
+                .onPreviewKeyEvent { event ->
+                    if (!editing) return@onPreviewKeyEvent false
+                    val adjust = playerStretchAdjustment(event.key.nativeKeyCode)
+                        ?: return@onPreviewKeyEvent false
+                    if (event.type == KeyEventType.KeyDown) onStretch(adjust)
+                    true
+                },
+        )
+    }
+}
+
+@Composable
+private fun StretchPercentage(label: String, percent: Int) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, color = Muted, style = MaterialTheme.typography.labelLarge)
+        Text(
+            formatStretchPercent(percent),
+            color = Paper,
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.labelLarge,
+        )
+    }
 }
 
 @Composable
 private fun StretchSlider(label: String, percent: Int, onChange: (Int) -> Unit) {
     Column {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, color = Muted, style = MaterialTheme.typography.labelLarge)
-            Text(
-                formatStretchPercent(percent),
-                color = Paper,
-                fontFamily = FontFamily.Monospace,
-                style = MaterialTheme.typography.labelLarge,
-            )
-        }
+        StretchPercentage(label, percent)
         Slider(
             value = percent.toFloat(),
             onValueChange = { onChange(stretchPercent(it)) },

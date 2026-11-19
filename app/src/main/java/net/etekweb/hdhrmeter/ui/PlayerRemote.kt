@@ -8,6 +8,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalConfiguration
+import net.etekweb.hdhrmeter.data.ChannelStretch
 
 /** Playback buttons in left-to-right order. Pause is where the remote lands. */
 internal enum class TransportStop { Start, Rewind, Pause, Forward, Live }
@@ -62,6 +63,15 @@ internal fun isPlayerRevealKeyCode(keyCode: Int): Boolean = when (keyCode) {
     -> true
     else -> false
 }
+
+internal fun playerStretchAdjustment(keyCode: Int): ((ChannelStretch) -> ChannelStretch)? =
+    when (keyCode) {
+        KeyEvent.KEYCODE_DPAD_UP -> { stretch -> stretch.copy(heightPercent = stretch.heightPercent + 1) }
+        KeyEvent.KEYCODE_DPAD_DOWN -> { stretch -> stretch.copy(heightPercent = stretch.heightPercent - 1) }
+        KeyEvent.KEYCODE_DPAD_RIGHT -> { stretch -> stretch.copy(widthPercent = stretch.widthPercent + 1) }
+        KeyEvent.KEYCODE_DPAD_LEFT -> { stretch -> stretch.copy(widthPercent = stretch.widthPercent - 1) }
+        else -> null
+    }
 
 /**
  * While the picture is up on a television, Back dismisses the chrome first.

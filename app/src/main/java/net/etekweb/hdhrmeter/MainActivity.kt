@@ -232,7 +232,7 @@ class MainActivity : ComponentActivity() {
                         onDetach = ::detachVideo,
                         onToggleOverlay = viewModel::toggleOverlay,
                         onSelectOverlayTab = viewModel::selectOverlayTab,
-                        onChannelStretch = viewModel::setChannelStretch,
+                        onChannelStretch = viewModel::updateChannelStretch,
                         onBack = viewModel::onBack,
                         onStep = viewModel::stepChannel,
                         onTranscode = viewModel::tryTranscode,
