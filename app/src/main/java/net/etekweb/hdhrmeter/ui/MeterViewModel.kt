@@ -141,6 +141,8 @@ data class SignalPeaks(
     }
 }
 
+data class LineupReturn(val channel: Channel, val programStartMs: Long?)
+
 data class UiState(
     val screen: Screen = Screen.Shell,
     val tab: AppTab = AppTab.Lineup,
@@ -178,8 +180,8 @@ data class UiState(
     val query: String = "",
     val filter: ChannelFilter = ChannelFilter.All,
     val recentChannels: List<String> = emptyList(),
-    /** Channel to reveal when the guide returns from the player. */
-    val returnToChannel: Channel? = null,
+    /** Lineup entry that opened the live player. */
+    val lineupReturn: LineupReturn? = null,
     val pendingChannel: Channel? = null,
     /** Skip taps still combining. The picture seeks when this clears. */
     val pendingSkip: PendingSkip? = null,
@@ -426,7 +428,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
 
     fun selectTab(tab: AppTab) {
         if (_ui.value.screen.inPlayer) return
-        _ui.update { state -> if (state.tab == tab) state else state.copy(tab = tab) }
+        _ui.update { state -> if (state.tab == tab) state else state.copy(tab = tab, lineupReturn = null) }
     }
 
     private fun authDevices(): List<HdhrDevice> {
@@ -1129,7 +1131,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 channels = emptyList(),
                 channelsLoading = false,
                 channelsError = null,
-                returnToChannel = null,
+                lineupReturn = null,
                 favoritePending = emptySet(),
                 favoriteError = null,
                 favoriteErrorGuide = null,
@@ -1249,7 +1251,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setFilter(filter: ChannelFilter) {
-        _ui.update { it.copy(filter = filter, returnToChannel = null) }
+        _ui.update { it.copy(filter = filter, lineupReturn = null) }
     }
 
     /**
@@ -1421,13 +1423,13 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun consumeReturnChannel() {
+    fun consumeLineupReturn() {
         _ui.update { state ->
-            if (state.returnToChannel == null) state else state.copy(returnToChannel = null)
+            if (state.lineupReturn == null) state else state.copy(lineupReturn = null)
         }
     }
 
-    fun watch(channel: Channel) {
+    fun watch(channel: Channel, programStartMs: Long?) {
         val device = when (val screen = _ui.value.screen) {
             is Screen.Watch -> screen.device
             is Screen.PlayRecording -> return
@@ -1447,6 +1449,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         _ui.update {
             it.copy(
                 screen = Screen.Watch(device, channel),
+                lineupReturn = LineupReturn(channel, programStartMs),
                 channelsError = null,
                 overlayVisible = true,
                 transcoding = false,
@@ -1571,7 +1574,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun onBack() {
-        when (val screen = _ui.value.screen) {
+        when (_ui.value.screen) {
             is Screen.Watch -> {
                 cancelChannelHop()
                 _ui.update {
@@ -1585,7 +1588,6 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                         tunerReleased = false,
                         offerTranscode = false,
                         pendingChannel = null,
-                        returnToChannel = screen.channel,
                     )
                 }
             }
@@ -1949,7 +1951,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                     channelsLoading = false,
                     channelsError = null,
                     query = "",
-                    returnToChannel = null,
+                    lineupReturn = null,
                     tunerAddError = null,
                     recentChannels = store.loadRecentChannels(device.deviceId),
                     favoritePending = emptySet(),
@@ -2010,7 +2012,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 channelsLoading = true,
                 channelsError = null,
                 query = "",
-                returnToChannel = null,
+                lineupReturn = null,
                 recentChannels = store.loadRecentChannels(device.deviceId),
                 tunerAddError = null,
                 favoritePending = emptySet(),

@@ -1,6 +1,9 @@
 package net.etekweb.hdhrmeter.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -62,8 +65,10 @@ import net.etekweb.hdhrmeter.R
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,6 +79,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -84,6 +90,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import net.etekweb.hdhrmeter.data.Channel
 import net.etekweb.hdhrmeter.data.AiringRecordStatus
 import net.etekweb.hdhrmeter.data.GuideProgram
@@ -220,8 +227,8 @@ fun ChannelsScreen(
     onRefresh: () -> Unit,
     onQuery: (String) -> Unit,
     onFilter: (ChannelFilter) -> Unit,
-    onWatch: (Channel) -> Unit,
-    onReturnScrollHandled: () -> Unit,
+    onWatch: (Channel, Long?) -> Unit,
+    onReturnHighlightFinished: () -> Unit,
     onOpenTuners: () -> Unit,
     onCloseTuners: () -> Unit,
     onRefreshTuners: () -> Unit,
@@ -248,24 +255,24 @@ fun ChannelsScreen(
         matchesQuery && matchesFilter
     }
     val shown = if (state.filter == ChannelFilter.Recents) {
-        channelsInViewOrder(matched, state.recentChannels)
+        // Playback updates recency. Keep the order of this view so the saved
+        // scroll offset still shows the same entries when the player closes.
+        val recentChannels = rememberSaveable { ArrayList(state.recentChannels) }
+        channelsInViewOrder(matched, recentChannels)
     } else {
         matched
     }
     var scheduleChannel by remember { mutableStateOf<Channel?>(null) }
     var scheduleProgram by remember { mutableStateOf<GuideProgram?>(null) }
-    val returnTo = state.returnToChannel
-    val returnIndex = if (returnTo == null) {
-        -1
-    } else {
-        shown.indexOfFirst {
-            it.guideNumber == returnTo.guideNumber && it.streamUrl == returnTo.streamUrl
-        }
+    val listState = key(state.filter) { rememberLazyListState() }
+    val lineupReturn = state.lineupReturn
+    val waitingForChannels = state.channelsLoading && shown.isEmpty()
+    LaunchedEffect(lineupReturn, waitingForChannels) {
+        if (lineupReturn == null || waitingForChannels) return@LaunchedEffect
+        delay(150)
+        onReturnHighlightFinished()
     }
-    val listState = rememberLazyListState(
-        initialFirstVisibleItemIndex = returnIndex.coerceAtLeast(0),
-    )
-    var searchOpen by remember { mutableStateOf(state.query.isNotEmpty()) }
+    var searchOpen by rememberSaveable { mutableStateOf(state.query.isNotEmpty()) }
     var grabFocus by remember { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
     val closeSearch = {
@@ -276,20 +283,6 @@ fun ChannelsScreen(
     }
     // An open search consumes back so the query is cleared before leaving the lineup.
     BackHandler(enabled = searchOpen, onBack = closeSearch)
-    LaunchedEffect(state.filter) {
-        // Coming back from the player reveals that channel instead of the top.
-        if (returnTo != null) return@LaunchedEffect
-        listState.scrollToItem(0)
-    }
-    LaunchedEffect(returnTo, shown) {
-        val channel = returnTo ?: return@LaunchedEffect
-        if (state.channelsLoading && shown.isEmpty()) return@LaunchedEffect
-        val index = shown.indexOfFirst {
-            it.guideNumber == channel.guideNumber && it.streamUrl == channel.streamUrl
-        }
-        if (index >= 0) listState.scrollToItem(index)
-        onReturnScrollHandled()
-    }
     Scaffold(
         containerColor = Ink,
         topBar = {
@@ -412,12 +405,17 @@ fun ChannelsScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         items(shown, key = { "${it.guideNumber}|${it.streamUrl}" }) { channel ->
+                            val program = guide?.airing(channel.guideNumber, channel.guideName, nowMs)
                             ChannelRow(
                                 channel,
-                                program = guide?.airing(channel.guideNumber, channel.guideName, nowMs),
+                                program = program,
                                 upcoming = guide?.upcoming(channel.guideNumber, channel.guideName, nowMs),
                                 nowMs = nowMs,
-                                onWatch = { onWatch(channel) },
+                                returnHighlighted = lineupReturn != null &&
+                                    lineupReturn.channel.guideNumber == channel.guideNumber &&
+                                    lineupReturn.channel.streamUrl == channel.streamUrl &&
+                                    lineupReturn.programStartMs == program?.startEpochMs,
+                                onWatch = { onWatch(channel, program?.startEpochMs) },
                                 onOpenGuide = {
                                     scheduleProgram = null
                                     scheduleChannel = channel
@@ -664,11 +662,21 @@ private fun ChannelRow(
     program: GuideProgram?,
     upcoming: GuideProgram?,
     nowMs: Long,
+    returnHighlighted: Boolean,
     onWatch: () -> Unit,
     onOpenGuide: () -> Unit,
 ) {
+    val cardColor by animateColorAsState(
+        targetValue = if (returnHighlighted) {
+            Color.White.copy(alpha = 0.16f).compositeOver(InkRaised)
+        } else {
+            InkRaised
+        },
+        animationSpec = tween(durationMillis = 350, easing = LinearEasing),
+        label = "Return highlight",
+    )
     Surface(
-        color = InkRaised,
+        color = cardColor,
         shape = MaterialTheme.shapes.medium,
         modifier = Modifier
             .fillMaxWidth()

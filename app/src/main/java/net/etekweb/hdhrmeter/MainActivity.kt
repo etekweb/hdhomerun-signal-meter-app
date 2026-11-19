@@ -34,8 +34,10 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.dp
@@ -218,6 +220,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
             HdhrTheme {
+                // The lineup leaves composition during playback. Keep its saved UI state
+                // for as long as Lineup is the active tab on this tuner.
+                val lineupState = key(state.tab, state.selectedDevice?.deviceId) {
+                    rememberSaveableStateHolder()
+                }
                 if (playing) {
                     PlayerScreen(
                         state = state,
@@ -247,23 +254,25 @@ class MainActivity : ComponentActivity() {
                     ) {
                         when (state.tab) {
                             AppTab.Lineup -> TunerGate(title = "Lineup", state = state) { device ->
-                                ChannelsScreen(
-                                    state = state,
-                                    device = device,
-                                    onRefresh = viewModel::refreshLineup,
-                                    onQuery = viewModel::setQuery,
-                                    onFilter = viewModel::setFilter,
-                                    onWatch = viewModel::watch,
-                                    onReturnScrollHandled = viewModel::consumeReturnChannel,
-                                    onOpenTuners = viewModel::openTuners,
-                                    onCloseTuners = viewModel::closeTuners,
-                                    onRefreshTuners = viewModel::refreshTuners,
-                                    onClearTuner = viewModel::forceClearTuner,
-                                    onToggleFavorite = viewModel::toggleFavorite,
-                                    onDismissFavoriteError = viewModel::dismissFavoriteError,
-                                    onEnsureSchedule = viewModel::ensureScheduleStatus,
-                                    onRecord = viewModel::requestRecording,
-                                )
+                                lineupState.SaveableStateProvider(AppTab.Lineup.name) {
+                                    ChannelsScreen(
+                                        state = state,
+                                        device = device,
+                                        onRefresh = viewModel::refreshLineup,
+                                        onQuery = viewModel::setQuery,
+                                        onFilter = viewModel::setFilter,
+                                        onWatch = viewModel::watch,
+                                        onReturnHighlightFinished = viewModel::consumeLineupReturn,
+                                        onOpenTuners = viewModel::openTuners,
+                                        onCloseTuners = viewModel::closeTuners,
+                                        onRefreshTuners = viewModel::refreshTuners,
+                                        onClearTuner = viewModel::forceClearTuner,
+                                        onToggleFavorite = viewModel::toggleFavorite,
+                                        onDismissFavoriteError = viewModel::dismissFavoriteError,
+                                        onEnsureSchedule = viewModel::ensureScheduleStatus,
+                                        onRecord = viewModel::requestRecording,
+                                    )
+                                }
                             }
                             AppTab.Dvr -> TunerGate(title = "DVR", state = state) {
                                 DvrScreen(
