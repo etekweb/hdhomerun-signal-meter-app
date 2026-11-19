@@ -116,30 +116,29 @@ data class TimeshiftProbe(
 )
 
 internal fun probeTimeshift(url: String): TimeshiftProbe {
-    val oldest = try {
-        openTimeshift(url, "bytes=0-", stream = false)
-    } catch (_: Exception) {
-        return TimeshiftProbe(failure = StreamFailure("Could not open the stream.", null))
-    }
-    oldest.use { head ->
-        liveStreamFailure(head.status, head.headers, head.errorBody)?.let { return TimeshiftProbe(failure = it) }
-        val oldestByte = contentRangeStart(head.headers["content-range"]) ?: 0L
-        val live = try {
-            openTimeshift(url, "bytes=$TIMESHIFT_LIVE_BYTE-", stream = false)
-        } catch (_: Exception) {
-            return TimeshiftProbe(failure = StreamFailure("Could not open the stream.", null))
+    // The record engine expects each range request to close before the session is reopened.
+    fun readEdge(offset: Long): TimeshiftSocket = openTimeshift(url, "bytes=$offset-", stream = false)
+    val noRange = StreamFailure("The DVR did not provide a seekable live buffer.", null)
+    return try {
+        val oldestByte = readEdge(0).use { head ->
+            liveStreamFailure(head.status, head.headers, head.errorBody)?.let {
+                return TimeshiftProbe(failure = it)
+            }
+            contentRangeStart(head.headers["content-range"]) ?: 0L
         }
-        live.use { edge ->
+        readEdge(TIMESHIFT_LIVE_BYTE).use { edge ->
             liveStreamFailure(edge.status, edge.headers, edge.errorBody)?.let {
                 return TimeshiftProbe(failure = it)
             }
-            val liveByte = contentRangeStart(edge.headers["content-range"]) ?: oldestByte
-            return TimeshiftProbe(
+            val liveByte = contentRangeStart(edge.headers["content-range"]) ?: return TimeshiftProbe(failure = noRange)
+            TimeshiftProbe(
                 oldestByte = oldestByte,
                 liveByte = maxOf(liveByte, oldestByte),
                 atMs = System.currentTimeMillis(),
             )
         }
+    } catch (_: java.io.IOException) {
+        TimeshiftProbe(failure = StreamFailure("Could not open the stream.", null))
     }
 }
 

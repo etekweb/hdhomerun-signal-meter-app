@@ -13,6 +13,7 @@ import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.net.URI
 import java.net.URL
 
 class HdhrException(message: String, cause: Throwable? = null) : Exception(message, cause)
@@ -51,26 +52,22 @@ class HdhrClient(context: Context) {
         }
     }
 
-    /**
-     * Recordings on every HDHomeRun record engine that answers discovery.
-     * An empty library with [RecordingLibrary.enginesFound] of 0 means no DVR was found.
-     */
-    /**
-     * Origin of one record engine on the LAN, such as `http://10.0.0.20:59090`.
-     * Null when no DVR storage answered. Live pause and seek stream from here.
-     */
-    fun recordEngineOrigin(): String? {
-        val hits = discoverStorage()
-        val engines = hits.mapNotNull { recordEngine(it) }
-        val engine = engines.minWithOrNull(compareBy<RecordEngine> { ipRank(it.host) }) ?: return null
-        return recordEngineOrigin(engine.storageUrl)
-    }
+    /** The DVR service that provides the live buffer. */
+    fun liveTimeshiftBase(tuner: HdhrDevice, dvrAddress: String): String? =
+        findRecordEngines(tuner, dvrAddress)
+            .filter { it.baseUrl != null }
+            .minByOrNull { ipRank(it.host) }
+            ?.baseUrl
 
-    fun loadRecordings(nowEpochMs: Long = System.currentTimeMillis()): RecordingLibrary {
-        val hits = discoverStorage()
-        val engines = hits.mapNotNull { recordEngine(it) }
-            .groupBy { it.deviceId }
-            .map { (_, group) -> group.minWith(compareBy<RecordEngine> { ipRank(it.host) }) }
+    fun loadRecordings(
+        tuner: HdhrDevice? = null,
+        dvrAddress: String = "",
+        nowEpochMs: Long = System.currentTimeMillis(),
+    ): RecordingLibrary {
+        val engines = findRecordEngines(tuner, dvrAddress)
+        if (engines.isEmpty() && dvrAddress.isNotBlank()) {
+            throw HdhrException("No HDHomeRun DVR storage answered at $dvrAddress.")
+        }
         if (engines.isEmpty()) return RecordingLibrary(emptyList(), 0, null)
         val recordings = ArrayList<Recording>()
         var failedEngines = 0
@@ -195,6 +192,7 @@ class HdhrClient(context: Context) {
         startPaddingSec: Int,
         endPaddingSec: Int,
         existingRuleId: String?,
+        dvrAddress: String = "",
     ): ScheduleOutcome {
         val auth = combinedAuth(devices)
         val startSec = startEpochMs / 1000L
@@ -226,7 +224,7 @@ class HdhrClient(context: Context) {
         if (oneOffRuleFor(rules, channelNumber, startEpochMs) == null) {
             throw HdhrException("The DVR did not accept this recording.")
         }
-        return ScheduleOutcome(rules, pokeRecordEngines())
+        return ScheduleOutcome(rules, pokeRecordEngines(devices.firstOrNull(), dvrAddress))
     }
 
     /**
@@ -313,8 +311,13 @@ class HdhrClient(context: Context) {
      * Drops one future recording.
      * A one-off deletes that rule. One episode of a series is skipped and the series rule stays.
      */
-    fun cancelScheduled(devices: List<HdhrDevice>, item: ScheduledRecording): ScheduleOutcome {
+    fun cancelScheduled(
+        devices: List<HdhrDevice>,
+        item: ScheduledRecording,
+        dvrAddress: String = "",
+    ): ScheduleOutcome {
         val auth = combinedAuth(devices)
+        val tuner = devices.firstOrNull()
         if (item.oneOff) {
             val query = deleteRuleQuery(item.ruleId)
                 ?: throw HdhrException("This scheduled recording cannot be canceled.")
@@ -322,7 +325,7 @@ class HdhrClient(context: Context) {
             if (rules.any { it.id == item.ruleId }) {
                 throw HdhrException("The DVR did not cancel this recording.")
             }
-            return ScheduleOutcome(rules, pokeRecordEngines("The schedule was updated"))
+            return ScheduleOutcome(rules, pokeRecordEngines(tuner, dvrAddress, "The schedule was updated"))
         }
         val programId = item.programId?.trim().orEmpty()
         val query = skipEpisodeQuery(item.seriesId, programId, item.startEpochMs / 1000L)
@@ -338,7 +341,7 @@ class HdhrClient(context: Context) {
             throw HdhrException(actionFailure(response.code, response.body, "Could not cancel the recording"))
         }
         val refreshed = runCatching { fetchRules(auth) }.getOrNull()
-        val poked = pokeRecordEngines("The schedule was updated")
+        val poked = pokeRecordEngines(tuner, dvrAddress, "The schedule was updated")
         val warning = if (refreshed == null) {
             val note = "The recording was canceled, but the schedule could not be read again."
             if (poked == null) note else "$note $poked"
@@ -354,6 +357,7 @@ class HdhrClient(context: Context) {
         ruleId: String,
         startPaddingSec: Int,
         endPaddingSec: Int,
+        dvrAddress: String = "",
     ): ScheduleOutcome {
         val auth = combinedAuth(devices)
         val query = oneOffScheduleQuery(null, ruleId, "", 0L, startPaddingSec, endPaddingSec)
@@ -362,7 +366,10 @@ class HdhrClient(context: Context) {
         if (rules.none { it.id == ruleId.trim() }) {
             throw HdhrException("The DVR did not accept these record times.")
         }
-        return ScheduleOutcome(rules, pokeRecordEngines("The schedule was updated"))
+        return ScheduleOutcome(
+            rules,
+            pokeRecordEngines(devices.firstOrNull(), dvrAddress, "The schedule was updated"),
+        )
     }
 
     fun status(device: HdhrDevice): List<TunerJson> {
@@ -447,29 +454,64 @@ class HdhrClient(context: Context) {
 
     private data class UdpHit(val device: UdpDevice, val sourceIp: String)
 
-    private fun discoverStorage(): List<UdpHit> {
-        val lock = multicastLock()
+    private fun discoverStorage(target: InetAddress? = null): List<UdpHit> {
+        val lock = if (target == null) multicastLock() else null
         try {
             lock?.acquire()
             return listenForDevices(
                 listOf(HdhrPackets.discoverStorageRequest(), HdhrPackets.discoverStorageRequestTypeOnly()),
                 HdhrPackets::parseStorageDiscoverReply,
+                target,
             )
         } finally {
             if (lock?.isHeld == true) lock.release()
         }
     }
 
-    private fun recordEngine(hit: UdpHit): RecordEngine? {
-        val sourceIp = hit.sourceIp
-        val base = hit.device.baseUrl?.let { usableBase(it, sourceIp) }?.trimEnd('/')
+    private fun recordEngineAtAddress(address: String): RecordEngine? {
+        val base = "http://$address"
+        val uri = URI(base)
+        if (uri.port != -1) return recordEngineOverHttp(base)
+        return discoverRecordEngineAt(uri.host) ?: recordEngineOverHttp(base)
+    }
+
+    private fun findRecordEngines(tuner: HdhrDevice?, dvrAddress: String): List<RecordEngine> {
+        if (dvrAddress.isNotBlank()) {
+            return listOfNotNull(normalizeDvrAddress(dvrAddress)?.let(::recordEngineAtAddress))
+        }
+        val local = runCatching { discoverStorage() }.getOrDefault(emptyList())
+            .mapNotNull { recordEngine(it) }
+        return local.ifEmpty {
+            listOfNotNull(tuner?.let { recordEngineOverHttp(it.baseUrl) ?: discoverRecordEngineAt(it.host) })
+        }
+    }
+
+    private fun recordEngineOverHttp(base: String): RecordEngine? {
+        val response = runCatching { http("${base.trimEnd('/')}/discover.json") }.getOrNull() ?: return null
+        if (response.code !in 200..299) return null
+        return directRecordEngine(response.body, base)
+    }
+
+    private fun discoverRecordEngineAt(host: String): RecordEngine? {
+        val target = runCatching { InetAddress.getByName(host) }.getOrNull() ?: return null
+        val hits = runCatching { discoverStorage(target) }.getOrDefault(emptyList())
+        return hits.firstNotNullOfOrNull { recordEngine(it, directHost = host) }
+    }
+
+    private fun recordEngine(hit: UdpHit, directHost: String? = null): RecordEngine? {
+        val sourceIp = directHost ?: hit.sourceIp
+        val direct = directHost != null
+        val base = hit.device.baseUrl?.let {
+            val usable = usableBase(it, sourceIp)
+            (if (direct) rewriteLanUrl(usable, sourceIp, direct = true) else usable).trimEnd('/')
+        }
         var name = "HDHomeRun DVR"
-        var storage = hit.device.storageUrl?.let { rewriteLanUrl(it, sourceIp) }
+        var storage = hit.device.storageUrl?.let { rewriteLanUrl(it, sourceIp, direct) }
         var space: StorageSpace? = null
         if (base != null) {
             val response = runCatching { http("$base/discover.json", readMs = 4_000) }.getOrNull()
             if (response != null && response.code in 200..299) {
-                parseRecordEngineDiscover(response.body, sourceIp)?.let { parsed ->
+                parseRecordEngineDiscover(response.body, sourceIp, direct)?.let { parsed ->
                     name = parsed.name
                     if (!parsed.storageUrl.isNullOrBlank()) storage = parsed.storageUrl
                     space = parsed.space
@@ -479,17 +521,16 @@ class HdhrClient(context: Context) {
         if (storage == null && base != null) storage = "$base/recorded_files.json"
         val url = storage?.let { httpRecordingUrl(it) } ?: return null
         return RecordEngine(
-            deviceId = deviceIdHex(hit.device.deviceId),
             name = name,
             host = hostOf(url) ?: sourceIp,
             storageUrl = url,
             space = space,
+            direct = direct,
+            baseUrl = base ?: recordEngineOrigin(url),
         )
     }
 
     private data class EngineRecordings(val recordings: List<Recording>, val incomplete: Boolean)
-
-    private fun Recording.atEngine(host: String): Recording = recordingAtEngine(this, host)
 
     private fun recordingsOn(engine: RecordEngine, nowEpochMs: Long): EngineRecordings {
         val response = http(engine.storageUrl, readMs = 20_000)
@@ -503,10 +544,10 @@ class HdhrClient(context: Context) {
         } catch (error: Exception) {
             throw HdhrException("The DVR returned a recording list that could not be read.", error)
         }
-        val recordings = ArrayList(index.recordings.map { it.atEngine(engine.host) })
+        val recordings = ArrayList(index.recordings.map { recordingAtEngine(it, engine.host, engine.direct) })
         var incomplete = false
         for (series in index.pending) {
-            val url = httpRecordingUrl(rewriteLanUrl(series.url, engine.host))
+            val url = httpRecordingUrl(rewriteLanUrl(series.url, engine.host, engine.direct))
             if (url == null) {
                 incomplete = true
                 continue
@@ -523,7 +564,7 @@ class HdhrClient(context: Context) {
                     series.seriesId,
                     nowEpochMs,
                     engine.name,
-                ).map { it.atEngine(engine.host) }
+                ).map { recordingAtEngine(it, engine.host, engine.direct) }
             } catch (_: Exception) {
                 incomplete = true
             }
@@ -537,17 +578,18 @@ class HdhrClient(context: Context) {
     private fun listenForDevices(
         payloads: List<ByteArray>,
         parse: (ByteArray) -> UdpDevice?,
+        target: InetAddress? = null,
     ): List<UdpHit> {
         val socket = DatagramSocket(null)
         try {
             socket.reuseAddress = true
             socket.broadcast = true
             socket.bind(InetSocketAddress(0))
-            val targets = broadcastTargets()
+            val targets = if (target == null) broadcastTargets() else listOf(target)
             val found = linkedMapOf<String, UdpHit>()
             repeat(2) { pass ->
                 sendDiscover(socket, targets, payloads)
-                collectReplies(socket, found, if (pass == 0) 900 else 700, parse)
+                collectReplies(socket, found, if (pass == 0) 900 else 700, parse, target)
             }
             return found.values.toList()
         } finally {
@@ -576,6 +618,7 @@ class HdhrClient(context: Context) {
         found: MutableMap<String, UdpHit>,
         windowMs: Int,
         parse: (ByteArray) -> UdpDevice?,
+        target: InetAddress?,
     ) {
         val deadline = System.nanoTime() + windowMs * 1_000_000L
         val buffer = ByteArray(2048)
@@ -585,10 +628,12 @@ class HdhrClient(context: Context) {
             try {
                 val packet = DatagramPacket(buffer, buffer.size)
                 socket.receive(packet)
+                if (target != null && packet.address != target) continue
                 val bytes = packet.data.copyOfRange(packet.offset, packet.offset + packet.length)
                 val parsed = parse(bytes) ?: continue
-                val sourceIp = (packet.address as? Inet4Address)?.hostAddress ?: continue
-                val key = deviceIdHex(parsed.deviceId)
+                if (target == null && packet.address !is Inet4Address) continue
+                val sourceIp = packet.address.hostAddress ?: continue
+                val key = discoverKey(parsed, sourceIp)
                 val hit = UdpHit(parsed, sourceIp)
                 val previous = found[key]
                 if (previous == null || ipRank(sourceIp) < ipRank(previous.sourceIp)) {
@@ -599,6 +644,10 @@ class HdhrClient(context: Context) {
             }
         }
     }
+
+    private fun discoverKey(device: UdpDevice, sourceIp: String): String =
+        device.storageId?.takeIf { it.isNotBlank() }
+            ?: if (device.deviceId != 0L) deviceIdHex(device.deviceId) else sourceIp
 
     private fun broadcastTargets(): List<InetAddress> {
         val targets = linkedSetOf<InetAddress>()
@@ -802,25 +851,22 @@ class HdhrClient(context: Context) {
         throw seriesIdFailure(sawChannel)
     }
 
-    /** Asks every record engine to reread the rules. A missing engine is reported, not fatal. */
-    private fun pokeRecordEngines(leadIn: String = "The recording is scheduled"): String? {
-        val engines = runCatching { discoverStorage() }.getOrDefault(emptyList())
-            .mapNotNull { recordEngine(it) }
-            .groupBy { it.deviceId }
-            .map { (_, group) -> group.minWith(compareBy<RecordEngine> { ipRank(it.host) }) }
-        if (engines.isEmpty()) {
-            return "$leadIn, but no record engine answered on the network."
-        }
+    /** Requests an immediate DVR refresh after the recording rule has been saved. */
+    private fun pokeRecordEngines(
+        tuner: HdhrDevice?,
+        dvrAddress: String,
+        leadIn: String = "The recording is scheduled",
+    ): String? {
+        val engines = runCatching { findRecordEngines(tuner, dvrAddress) }.getOrDefault(emptyList())
         var poked = false
         for (engine in engines) {
-            val origin = recordEngineOrigin(engine.storageUrl) ?: continue
-            val url = recordingSyncUrl(origin) ?: continue
+            val url = engine.syncUrl ?: continue
             val response = runCatching {
                 http(url, method = "POST", connectMs = 4_000, readMs = 8_000)
             }.getOrNull()
             if (response != null && response.code in 200..299) poked = true
         }
-        if (!poked) return "$leadIn. The record engine has not picked it up yet."
+        if (!poked) return "$leadIn, but the app could not confirm an immediate refresh with the DVR."
         return null
     }
 }

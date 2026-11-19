@@ -32,7 +32,7 @@ class TimeshiftTest {
     }
 
     @Test(timeout = 15_000)
-    fun probeReadsOldestThenLive() {
+    fun probeClosesTheOldestRangeBeforeReadingLive() {
         val server = ServerSocket(0, 4, InetAddress.getByName("127.0.0.1"))
         server.soTimeout = 4_000
         val ranges = mutableListOf<String>()
@@ -50,6 +50,7 @@ class TimeshiftTest {
                         "Connection: close\r\n\r\n"
                     it.getOutputStream().write(response.toByteArray(Charsets.ISO_8859_1))
                     it.getOutputStream().flush()
+                    if (index == 0 && it.getInputStream().read() != -1) return@Thread
                 }
             }
         }
@@ -65,6 +66,28 @@ class TimeshiftTest {
         } finally {
             server.close()
             thread.join(2_000)
+        }
+    }
+
+    @Test(timeout = 15_000)
+    fun probeRejectsLiveStreamsThatIgnoreRange() {
+        ServerSocket(0, 4, InetAddress.getByName("127.0.0.1")).use { server ->
+            server.soTimeout = 4_000
+            val worker = Thread {
+                repeat(2) {
+                    server.accept().use { client ->
+                        client.soTimeout = 3_000
+                        readUntilHeaders(client)
+                        val response = "HTTP/1.1 200 OK\r\nContent-Type: video/mpeg\r\n\r\n"
+                        client.getOutputStream().write(response.toByteArray(Charsets.ISO_8859_1))
+                    }
+                }
+            }
+            worker.isDaemon = true
+            worker.start()
+            val probe = probeTimeshift("http://127.0.0.1:${server.localPort}/auto/v7.1")
+            worker.join(2_000)
+            assertEquals("The DVR did not provide a seekable live buffer.", probe.failure?.message)
         }
     }
 

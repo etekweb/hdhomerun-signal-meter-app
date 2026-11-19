@@ -243,6 +243,67 @@ class RecordingsTest {
     }
 
     @Test
+    fun directDvrDiscoveryUsesTheReachableHostForTheLibraryAndPlayback() {
+        val engine = checkNotNull(
+            directRecordEngine(
+                """{"FriendlyName":"Record","StorageURL":"http://192.168.1.20:59090/recorded_files.json"}""",
+                "http://100.64.1.20",
+            ),
+        )
+        assertEquals("http://100.64.1.20:59090/recorded_files.json", engine.storageUrl)
+        assertEquals("http://100.64.1.20:59090/recording_events.post?sync", engine.syncUrl)
+        val index = parseRecordingIndex(
+            """
+            [
+              {"SeriesID":"SHOW","Title":"Show","EpisodesURL":"http://192.168.1.20:59090/recorded_files.json?SeriesID=SHOW"},
+              {"Title":"News","PlayURL":"http://192.168.1.20:59090/rec/news%20today","CmdURL":"http://192.168.1.20:59090/rec/news?FileID=1"}
+            ]
+            """.trimIndent(),
+            nowMs,
+            engine.name,
+        )
+        assertEquals(
+            "http://100.64.1.20:59090/recorded_files.json?SeriesID=SHOW",
+            rewriteLanUrl(index.pending.single().url, engine.host, engine.direct),
+        )
+        val recording = recordingAtEngine(index.recordings.single(), engine.host, engine.direct)
+        assertEquals("http://100.64.1.20:59090/rec/news%20today", recording.playUrl)
+        assertEquals("http://100.64.1.20:59090/rec/news?FileID=1", recording.cmdUrl)
+        assertNull(directRecordEngine("""{"FriendlyName":"Tuner Only"}""", "http://100.64.1.20"))
+    }
+
+    @Test
+    fun remoteScheduleSyncUsesTheEngineBasePortAndReachableHost() {
+        val engine = checkNotNull(
+            directRecordEngine(
+                """
+                {
+                  "BaseURL":"http://192.168.1.20:59090",
+                  "StorageURL":"http://192.168.1.20:5004/recorded_files.json"
+                }
+                """.trimIndent(),
+                "http://dvr.example:59090",
+            ),
+        )
+        assertEquals("http://dvr.example:5004/recorded_files.json", engine.storageUrl)
+        assertEquals("http://dvr.example:59090/recording_events.post?sync", engine.syncUrl)
+        assertEquals(
+            "http://dvr.example:59090/auto/v7.1?ClientID=client&SessionID=DEADBEEF",
+            timeshiftStreamUrl(checkNotNull(engine.baseUrl), "7.1", "client", "DEADBEEF"),
+        )
+    }
+
+    @Test
+    fun manualDvrAddressAcceptsAHostWithAnOptionalPort() {
+        assertEquals("dvr.example", normalizeDvrAddress("dvr.example"))
+        assertEquals("100.64.1.20:59090", normalizeDvrAddress(" http://100.64.1.20:59090/ "))
+        assertEquals("[fd7a:115c:a1e0::12]:59090", normalizeDvrAddress("[fd7a:115c:a1e0::12]:59090"))
+        assertNull(normalizeDvrAddress("dvr.example:65536"))
+        assertNull(normalizeDvrAddress("http://dvr.example/recorded_files.json"))
+        assertNull(normalizeDvrAddress("http://user@dvr.example"))
+    }
+
+    @Test
     fun discoverJsonSuppliesCapacity() {
         val parsed = parseRecordEngineDiscover(
             """{"FriendlyName":"HDHomeRun RECORD","StorageURL":"http://dvr.local:59090/recorded_files.json","FreeSpace":1363153027072,"TotalSpace":4000000000000}""",

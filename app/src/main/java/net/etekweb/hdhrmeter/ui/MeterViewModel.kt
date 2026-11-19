@@ -26,9 +26,11 @@ import net.etekweb.hdhrmeter.data.SignalReading
 import net.etekweb.hdhrmeter.data.rememberViewedChannel
 import net.etekweb.hdhrmeter.data.GUIDE_URL_HINT
 import net.etekweb.hdhrmeter.data.GuideMode
+import net.etekweb.hdhrmeter.data.HardwareDecodeMode
 import net.etekweb.hdhrmeter.data.isIdle
 import net.etekweb.hdhrmeter.data.hdhrGuideKey
 import net.etekweb.hdhrmeter.data.normalizeGuideUrl
+import net.etekweb.hdhrmeter.data.normalizeDvrAddress
 import net.etekweb.hdhrmeter.data.rememberTuner
 import net.etekweb.hdhrmeter.data.sameTuner
 import net.etekweb.hdhrmeter.data.mergeSignal
@@ -151,6 +153,7 @@ data class UiState(
     val scanError: String? = null,
     val tunerAddError: String? = null,
     val manualHost: String = "",
+    val dvrAddress: String = "",
     val guideSources: List<String> = emptyList(),
     val guideMode: GuideMode = GuideMode.HdHomeRun,
     val activeGuideUrl: String = "",
@@ -198,8 +201,7 @@ data class UiState(
     val dvr: DvrState = DvrState(),
     val schedule: ScheduleState = ScheduleState(),
     val playbackClock: PlaybackClock = PlaybackClock(),
-    /** Software decoding unless the hardware decoding setting is enabled. */
-    val hardwareDecode: Boolean = false,
+    val hardwareDecode: HardwareDecodeMode = HardwareDecodeMode.HdOnly,
     val showChannelNumber: Boolean = false,
 )
 
@@ -224,6 +226,12 @@ data class PendingRecording(
     val program: GuideProgram,
 )
 
+data class RecordingNotice(
+    val channelNumber: String,
+    val startEpochMs: Long,
+    val message: String,
+)
+
 /** Recording rules from the HDHomeRun account, plus the confirm dialog. */
 data class ScheduleState(
     val rules: List<RecordingRule> = emptyList(),
@@ -232,9 +240,11 @@ data class ScheduleState(
     val pending: PendingRecording? = null,
     val saving: Boolean = false,
     val error: String? = null,
-    val notice: String? = null,
-    val noticeStartMs: Long? = null,
-)
+    val notice: RecordingNotice? = null,
+) {
+    internal fun noticeFor(channelNumber: String?, startEpochMs: Long?): String? =
+        notice?.takeIf { it.channelNumber == channelNumber?.trim() && it.startEpochMs == startEpochMs }?.message
+}
 
 enum class DvrSection { Recordings, Scheduled }
 
@@ -290,6 +300,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 guideMode = guides.mode,
                 activeGuideUrl = guides.activeUrl,
                 savedTuners = store.loadSavedTuners(),
+                dvrAddress = store.loadDvrAddress(),
                 selectedDevice = recent,
                 tunerReach = if (recent == null) TunerReach.Missing else TunerReach.Checking,
                 overlayTab = overlayTabFromStored(store.loadOverlayTab()),
@@ -351,7 +362,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private var clockJob: Job? = null
 
     init {
-        engine.setHardwareDecode(store.loadHardwareDecode())
+        engine.setHardwareDecode(_ui.value.hardwareDecode)
         shift.watchInterlace(
             token = { engine.playSerial() },
             listener = { serial, interlaced -> engine.noteInterlaced(serial, interlaced) },
@@ -458,19 +469,43 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         _ui.update { it.copy(dvr = it.dvr.copy(storageForecastEnabled = enabled)) }
     }
 
-    /** Loads the DVR library the first time the tab is shown. */
+    /** Loads the DVR library and retries discovery if storage was unavailable. */
     fun ensureRecordings() {
         val dvr = _ui.value.dvr
-        if (dvr.loading || dvr.loaded) return
+        if (dvr.loading || (dvr.loaded && dvr.enginesFound > 0)) return
+        refreshRecordings()
+    }
+
+    fun setDvrAddress(input: String) {
+        val address = if (input.isBlank()) "" else normalizeDvrAddress(input) ?: return
+        if (address == _ui.value.dvrAddress) return
+        store.saveDvrAddress(address)
+        _ui.update {
+            it.copy(
+                dvrAddress = address,
+                dvr = it.dvr.copy(
+                    recordings = emptyList(),
+                    selectedId = null,
+                    confirmDelete = false,
+                    actionError = null,
+                    enginesFound = 0,
+                    storage = null,
+                    warning = null,
+                ),
+            )
+        }
         refreshRecordings()
     }
 
     fun refreshRecordings() {
         val generation = ++recordingGeneration
         recordingJob?.cancel()
+        val request = _ui.value
         recordingJob = viewModelScope.launch {
             _ui.update { it.copy(dvr = it.dvr.copy(loading = true, error = null)) }
-            val result = withContext(Dispatchers.IO) { runCatching { client.loadRecordings() } }
+            val result = withContext(Dispatchers.IO) {
+                runCatching { client.loadRecordings(request.selectedDevice, request.dvrAddress) }
+            }
             if (!isActive || generation != recordingGeneration) return@launch
             result.onSuccess { library ->
                 _ui.update { state ->
@@ -698,12 +733,13 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             DvrSection.Scheduled -> {
                 val item = dvr.scheduled.firstOrNull { it.id == dvr.selectedScheduledId } ?: return
                 val devices = authDevices()
+                val dvrAddress = _ui.value.dvrAddress
                 val generation = ++dvrActionGeneration
                 dvrActionJob?.cancel()
                 _ui.update { it.copy(dvr = it.dvr.copy(acting = true, actionError = null)) }
                 dvrActionJob = viewModelScope.launch {
                     val result = withContext(Dispatchers.IO) {
-                        runCatching { client.cancelScheduled(devices, item) }
+                        runCatching { client.cancelScheduled(devices, item, dvrAddress) }
                     }
                     if (!isActive || generation != dvrActionGeneration) return@launch
                     result.onSuccess { outcome ->
@@ -757,13 +793,14 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         if (dvr.acting || !dvr.editingPadding) return
         val item = dvr.scheduled.firstOrNull { it.id == dvr.selectedScheduledId } ?: return
         val devices = authDevices()
+        val dvrAddress = _ui.value.dvrAddress
         val ruleId = item.ruleId
         val generation = ++dvrActionGeneration
         dvrActionJob?.cancel()
         _ui.update { it.copy(dvr = it.dvr.copy(acting = true, actionError = null)) }
         dvrActionJob = viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { client.changeRulePadding(devices, ruleId, startPaddingSec, endPaddingSec) }
+                runCatching { client.changeRulePadding(devices, ruleId, startPaddingSec, endPaddingSec, dvrAddress) }
             }
             if (!isActive || generation != dvrActionGeneration) return@launch
             result.onSuccess { outcome ->
@@ -904,11 +941,11 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setHardwareDecode(enabled: Boolean) {
-        if (enabled == _ui.value.hardwareDecode) return
-        store.saveHardwareDecode(enabled)
-        _ui.update { it.copy(hardwareDecode = enabled) }
-        engine.setHardwareDecode(enabled)
+    fun setHardwareDecode(mode: HardwareDecodeMode) {
+        if (mode == _ui.value.hardwareDecode) return
+        store.saveHardwareDecode(mode)
+        _ui.update { it.copy(hardwareDecode = mode) }
+        engine.setHardwareDecode(mode)
     }
 
     fun setShowChannelNumber(enabled: Boolean) {
@@ -1300,7 +1337,6 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                     pending = PendingRecording(number, channelName.trim(), program),
                     error = null,
                     notice = null,
-                    noticeStartMs = null,
                 ),
             )
         }
@@ -1321,6 +1357,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         if (_ui.value.schedule.saving) return
         val generation = ++scheduleGeneration
         val devices = authDevices()
+        val dvrAddress = _ui.value.dvrAddress
         val existing = oneOffRuleFor(
             _ui.value.schedule.rules,
             pending.channelNumber,
@@ -1339,12 +1376,16 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                         startPaddingSec,
                         endPaddingSec,
                         existing?.id,
+                        dvrAddress,
                     )
                 }
             }
             if (!isActive) return@launch
             val current = generation == scheduleGeneration
             result.onSuccess { outcome ->
+                val notice = outcome.warning?.let { message ->
+                    RecordingNotice(pending.channelNumber, pending.program.startEpochMs, message)
+                }
                 _ui.update { state ->
                     state.copy(
                         schedule = state.schedule.copy(
@@ -1353,12 +1394,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                             pending = if (current) null else state.schedule.pending,
                             saving = if (current) false else state.schedule.saving,
                             error = if (current) null else state.schedule.error,
-                            notice = if (current) outcome.warning else state.schedule.notice,
-                            noticeStartMs = when {
-                                !current -> state.schedule.noticeStartMs
-                                outcome.warning != null -> pending.program.startEpochMs
-                                else -> null
-                            },
+                            notice = if (current) notice else state.schedule.notice,
                         ),
                     )
                 }
@@ -1426,7 +1462,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             channel,
             transcode = false,
             forceAuto = false,
-            refreshEngine = !engineOriginKnown || engineOrigin == null,
+            refreshEngine = true,
         )
     }
 
@@ -1446,7 +1482,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                     screen.channel,
                     transcode = _ui.value.transcoding,
                     forceAuto = false,
-                    refreshEngine = engineOrigin == null,
+                    refreshEngine = true,
                 )
             }
             is Screen.PlayRecording -> startRecording(screen.recording)
@@ -2126,7 +2162,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             val shiftUrl = if (transcode) {
                 null
             } else {
-                resolveEngine(refreshEngine)?.let { shift.openSession(it, channel.guideNumber) }
+                resolveEngine(device, refreshEngine)?.let { shift.openSession(it, channel.guideNumber) }
             }
             val shifted = if (shiftUrl == null) {
                 null
@@ -2135,6 +2171,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                     ?.takeIf { it.failure == null }
             }
             if (generation != playGeneration) return@launch
+            if (shiftUrl != null && shifted == null) engineOriginKnown = false
             val playUrl = if (shifted != null && shiftUrl != null) {
                 shift.begin(shiftUrl, shifted)
                 shift.localUrl
@@ -2163,15 +2200,16 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
             ensureClock()
-            engine.play(playUrl)
+            engine.play(playUrl, isHd = channel.hd.takeIf { it && !transcode })
             pollSignal(generation, device, channel)
         }
     }
 
-    private suspend fun resolveEngine(refresh: Boolean): String? {
+    private suspend fun resolveEngine(device: HdhrDevice, refresh: Boolean): String? {
         if (!refresh && engineOriginKnown) return engineOrigin
+        val dvrAddress = _ui.value.dvrAddress
         val found = withContext(Dispatchers.IO) {
-            runCatching { client.recordEngineOrigin() }.getOrNull()
+            runCatching { client.liveTimeshiftBase(device, dvrAddress) }.getOrNull()
         }
         engineOrigin = found
         engineOriginKnown = true

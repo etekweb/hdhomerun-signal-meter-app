@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -43,6 +44,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,15 +57,20 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import net.etekweb.hdhrmeter.data.GuideMode
+import net.etekweb.hdhrmeter.data.HardwareDecodeMode
 import net.etekweb.hdhrmeter.data.HdhrDevice
 import net.etekweb.hdhrmeter.data.mergeTuners
 import net.etekweb.hdhrmeter.data.hdhrGuideKey
+import net.etekweb.hdhrmeter.data.normalizeDvrAddress
 import net.etekweb.hdhrmeter.data.sameTuner
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -75,13 +82,14 @@ fun SettingsScreen(
     onAddDevice: () -> Unit,
     onSelectDevice: (HdhrDevice) -> Unit,
     onRemoveDevice: (HdhrDevice) -> Unit,
+    onDvrAddressChange: (String) -> Unit,
     onGuideDraft: (String) -> Unit,
     onAddGuide: () -> Unit,
     onSelectNone: () -> Unit,
     onSelectHdHomeRun: () -> Unit,
     onSelectGuide: (String) -> Unit,
     onRemoveGuide: (String) -> Unit,
-    onHardwareDecode: (Boolean) -> Unit,
+    onHardwareDecode: (HardwareDecodeMode) -> Unit,
     onShowChannelNumber: (Boolean) -> Unit,
 ) {
     val tuners = mergeTuners(state.devices, state.savedTuners)
@@ -158,6 +166,12 @@ fun SettingsScreen(
                     HorizontalDivider(color = InkRaised, modifier = Modifier.padding(vertical = 6.dp))
                 }
                 item {
+                    DvrAddressField(state.dvrAddress, onDvrAddressChange)
+                }
+                item {
+                    HorizontalDivider(color = InkRaised, modifier = Modifier.padding(vertical = 6.dp))
+                }
+                item {
                     Text("Guide providers", style = MaterialTheme.typography.titleMedium, color = Paper)
                 }
                 item {
@@ -211,12 +225,7 @@ fun SettingsScreen(
                     Text("Playback", style = MaterialTheme.typography.titleMedium, color = Paper)
                 }
                 item {
-                    PlaybackToggleRow(
-                        title = "Use hardware decoding when available",
-                        checked = state.hardwareDecode,
-                        onChecked = onHardwareDecode,
-                        detail = "Can improve playback performance where supported (eg. smart TVs), however interlacing can create issues.",
-                    )
+                    HardwareDecodeChoices(state.hardwareDecode, onHardwareDecode)
                 }
                 item {
                     PlaybackToggleRow(
@@ -231,11 +240,68 @@ fun SettingsScreen(
 }
 
 @Composable
+private fun DvrAddressField(address: String, onSave: (String) -> Unit) {
+    var draft by rememberSaveable(address) { mutableStateOf(address) }
+    val normalized = if (draft.isBlank()) "" else normalizeDvrAddress(draft)
+    val canSave = normalized != null && normalized != address
+    val save = { if (canSave) onSave(draft) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("DVR address", style = MaterialTheme.typography.titleMedium, color = Paper)
+        Text(
+            "Optional. Enter the DVR’s IP address or hostname, with its port if needed. Leave blank for automatic discovery.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Muted,
+        )
+        SettingsTextField(
+            value = draft,
+            onValueChange = { draft = it },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = "192.168.1.20",
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { save() }),
+        )
+        Button(onClick = save, enabled = canSave, modifier = Modifier.align(Alignment.End)) {
+            Text("Save DVR address")
+        }
+    }
+}
+
+@Composable
+private fun HardwareDecodeChoices(selectedMode: HardwareDecodeMode, onSelect: (HardwareDecodeMode) -> Unit) {
+    Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Use hardware decoding when available", style = MaterialTheme.typography.titleMedium, color = Paper)
+        Text(
+            "Hardware decoding can improve performance but can cause issues with interlaced video.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Muted,
+        )
+        HardwareDecodeMode.entries.forEach { mode ->
+            val label = when (mode) {
+                HardwareDecodeMode.Always -> "Always"
+                HardwareDecodeMode.HdOnly -> "HD Only"
+                HardwareDecodeMode.Never -> "Never"
+            }
+            ChoiceRow(
+                selected = mode == selectedMode,
+                onSelect = { onSelect(mode) },
+                onRemove = null,
+                removeDescription = "",
+                modifier = Modifier.semantics {
+                    role = Role.RadioButton
+                    selected = mode == selectedMode
+                },
+            ) {
+                Text(label, style = MaterialTheme.typography.titleMedium, color = Paper)
+            }
+        }
+    }
+}
+
+@Composable
 private fun PlaybackToggleRow(
     title: String,
     checked: Boolean,
     onChecked: (Boolean) -> Unit,
-    detail: String? = null,
 ) {
     Surface(
         color = InkRaised,
@@ -249,12 +315,7 @@ private fun PlaybackToggleRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(title, style = MaterialTheme.typography.titleMedium, color = Paper)
-                if (detail != null) {
-                    Text(detail, style = MaterialTheme.typography.bodyMedium, color = Muted)
-                }
-            }
+            Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, color = Paper)
             Switch(checked = checked, onCheckedChange = null)
         }
     }
@@ -388,13 +449,14 @@ private fun ChoiceRow(
     onSelect: () -> Unit,
     onRemove: (() -> Unit)?,
     removeDescription: String,
+    modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
     Surface(
         onClick = onSelect,
         color = InkRaised,
         shape = MaterialTheme.shapes.medium,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .border(1.dp, if (selected) Amber else Color.Transparent, MaterialTheme.shapes.medium),
     ) {

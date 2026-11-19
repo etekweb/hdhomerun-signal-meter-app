@@ -53,17 +53,21 @@ data class RecordingLibrary(
 )
 
 internal data class RecordEngine(
-    val deviceId: String,
     val name: String,
     val host: String,
     val storageUrl: String,
     val space: StorageSpace? = null,
-)
+    val direct: Boolean = false,
+    val baseUrl: String?,
+) {
+    val syncUrl: String? get() = baseUrl?.let(::recordingSyncUrl)
+}
 
 internal data class RecordEngineDiscover(
     val name: String,
     val storageUrl: String?,
     val space: StorageSpace? = null,
+    val baseUrl: String? = null,
 )
 
 internal data class SeriesRequest(
@@ -77,12 +81,32 @@ internal data class RecordingIndex(
     val recordings: List<Recording>,
 )
 
-internal fun parseRecordEngineDiscover(body: String, sourceIp: String): RecordEngineDiscover? {
+internal fun parseRecordEngineDiscover(
+    body: String,
+    sourceIp: String,
+    direct: Boolean = false,
+): RecordEngineDiscover? {
     val json = runCatching { JSONObject(stripRecordingBom(body)) }.getOrNull() ?: return null
     val name = json.optText("FriendlyName") ?: "HDHomeRun DVR"
-    val storage = json.optText("StorageURL")?.let { rewriteLanUrl(it, sourceIp) }
+    val storage = json.optText("StorageURL")?.let { rewriteLanUrl(it, sourceIp, direct) }
     val space = storageSpace(json.optByteCount("FreeSpace"), json.optByteCount("TotalSpace"))
-    return RecordEngineDiscover(name, storage, space)
+    val base = json.optText("BaseURL")?.let { rewriteLanUrl(it, sourceIp, direct) }
+    return RecordEngineDiscover(name, storage, space, base)
+}
+
+internal fun directRecordEngine(body: String, base: String): RecordEngine? {
+    val host = hostOf(base) ?: return null
+    val discovered = parseRecordEngineDiscover(body, host, direct = true) ?: return null
+    val storage = discovered.storageUrl ?: return null
+    val origin = recordEngineOrigin(storage) ?: return null
+    return RecordEngine(
+        name = discovered.name,
+        host = host,
+        storageUrl = storage,
+        space = discovered.space,
+        direct = true,
+        baseUrl = discovered.baseUrl?.let(::recordEngineOrigin) ?: origin,
+    )
 }
 
 /**
@@ -203,13 +227,14 @@ internal fun sortRecordings(recordings: List<Recording>): List<Recording> {
 }
 
 /** Point a record-engine URL at the host that answered discovery. Path and query stay. */
-internal fun rewriteLanUrl(url: String, sourceHost: String): String {
+internal fun rewriteLanUrl(url: String, sourceHost: String, direct: Boolean = false): String {
     return try {
         val uri = URI(url)
         val host = uri.host ?: return url
         if (host == sourceHost) return url
         val literalIp = host.none { it.isLetter() }
-        if (literalIp) return url
+        // A directly contacted engine can advertise a LAN address through Tailscale.
+        if (literalIp && !direct) return url
         val scheme = uri.scheme ?: "http"
         val port = if (uri.port == -1) "" else ":${uri.port}"
         val path = uri.rawPath.orEmpty()
@@ -218,6 +243,16 @@ internal fun rewriteLanUrl(url: String, sourceHost: String): String {
     } catch (_: Exception) {
         url
     }
+}
+
+internal fun normalizeDvrAddress(input: String): String? {
+    val address = input.trim().removePrefix("http://").removeSuffix("/")
+    val uri = runCatching { URI("http://$address") }.getOrNull() ?: return null
+    if (uri.host == null || uri.rawUserInfo != null || !uri.rawPath.isNullOrEmpty() ||
+        uri.rawQuery != null || uri.rawFragment != null || address.endsWith(':') ||
+        (uri.port != -1 && uri.port !in 1..65535)
+    ) return null
+    return uri.rawAuthority
 }
 
 private fun readRecordingDocument(
@@ -386,16 +421,16 @@ internal fun recordingResumeToStore(offsetMs: Long, durationMs: Long?): Long {
 }
 
 /** Point a recording PlayURL at the engine host that answered discovery. */
-internal fun recordingPlayUrl(url: String?, engineHost: String): String? {
+internal fun recordingPlayUrl(url: String?, engineHost: String, direct: Boolean = false): String? {
     val raw = url?.trim() ?: return null
     if (!raw.startsWith("http://") && !raw.startsWith("https://")) return null
-    return rewriteLanUrl(raw, engineHost)
+    return rewriteLanUrl(raw, engineHost, direct)
 }
 
 /** Point PlayURL and CmdURL at the engine host that answered discovery. */
-internal fun recordingAtEngine(recording: Recording, host: String): Recording {
-    val play = recordingPlayUrl(recording.playUrl, host)
-    val cmd = recordingPlayUrl(recording.cmdUrl, host)
+internal fun recordingAtEngine(recording: Recording, host: String, direct: Boolean = false): Recording {
+    val play = recordingPlayUrl(recording.playUrl, host, direct)
+    val cmd = recordingPlayUrl(recording.cmdUrl, host, direct)
     if (play == recording.playUrl && cmd == recording.cmdUrl) return recording
     return recording.copy(playUrl = play, cmdUrl = cmd)
 }

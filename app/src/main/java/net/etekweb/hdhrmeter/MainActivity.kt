@@ -294,6 +294,7 @@ class MainActivity : ComponentActivity() {
                                 onAddDevice = viewModel::addDevice,
                                 onSelectDevice = viewModel::selectDevice,
                                 onRemoveDevice = viewModel::removeSavedDevice,
+                                onDvrAddressChange = viewModel::setDvrAddress,
                                 onGuideDraft = viewModel::setGuideDraft,
                                 onAddGuide = viewModel::addGuideSource,
                                 onSelectNone = viewModel::selectGuideNone,

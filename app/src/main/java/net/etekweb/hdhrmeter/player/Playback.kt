@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import android.view.View
+import net.etekweb.hdhrmeter.data.HardwareDecodeMode
 import net.etekweb.hdhrmeter.data.StreamFailure
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -108,8 +109,10 @@ class PlaybackEngine(context: Context) {
     /** Each play() bumps this. An older queued start must not swallow the latest seek. */
     private val startSerial = AtomicInteger(0)
 
-    @Volatile private var hardwareRequested = false
-    /** The choice used for the media that is open now, not a checkbox flipped mid-stream. */
+    @Volatile private var hardwareDecode = HardwareDecodeMode.HdOnly
+    @Volatile private var sourceIsHd: Boolean? = null
+    @Volatile private var mediaSerial = 0
+    /** The decoder preference applied to the currently open media. */
     @Volatile private var openedWithHardware = false
     private val hardwareCodecs = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
     @Volatile private var wantPlaying = true
@@ -138,7 +141,7 @@ class PlaybackEngine(context: Context) {
         }
     }
 
-    fun play(url: String, keepPicture: Boolean = false) {
+    fun play(url: String, keepPicture: Boolean = false, isHd: Boolean? = null) {
         val mediaPlayer = player
         if (mediaPlayer == null || lib == null) {
             _error.value = PlaybackFailure(unavailable ?: "Video playback could not start on this phone.")
@@ -147,8 +150,9 @@ class PlaybackEngine(context: Context) {
             return
         }
         pendingUrl = url
-        wantPlaying = requestAudioFocus()
         val serial = startSerial.incrementAndGet()
+        if (!keepPicture) sourceIsHd = isHd
+        wantPlaying = requestAudioFocus()
         // A seek closes the current HTTP socket. That looks like a playback failure
         // until the replacement stream is open. A fresh tune reports real failures.
         ignoreErrorUntilElapsed = if (keepPicture) SystemClock.elapsedRealtime() + 1_500 else 0L
@@ -305,7 +309,7 @@ class PlaybackEngine(context: Context) {
         media.addOption(":http-user-agent=HDHomeRunSignalMeter")
         media.addOption(":network-caching=1200")
         media.addOption(":live-caching=1200")
-        openedWithHardware = hardwareRequested
+        openedWithHardware = hardwareDecode.requestsHardware(sourceIsHd)
         if (openedWithHardware) {
             // Hardware first, then VLC's own decoder. Phones often have no MPEG-2 decoder.
             media.setHWDecoderEnabled(true, false)
@@ -318,6 +322,7 @@ class PlaybackEngine(context: Context) {
         media.addOption(":deinterlace-mode=yadif")
         mediaPlayer.media = media
         media.release()
+        mediaSerial = serial
         mediaPlayer.play()
         playingUrl = url
         if (!wantPlaying) runCatching { mediaPlayer.pause() }
@@ -325,11 +330,18 @@ class PlaybackEngine(context: Context) {
 
     fun playSerial(): Int = startSerial.get()
 
-    /** Applies on the next open. A stream that is already up restarts so the Signal tab matches it. */
-    fun setHardwareDecode(enabled: Boolean) {
-        hardwareRequested = enabled
-        val url = pendingUrl ?: return
-        play(url)
+    /** Reopen the stream when its requested decoder changes. */
+    fun setHardwareDecode(mode: HardwareDecodeMode) {
+        val wasRequested = hardwareDecode.requestsHardware(sourceIsHd)
+        hardwareDecode = mode
+        if (pendingUrl != null && wasRequested != mode.requestsHardware(sourceIsHd)) restartForDecoder()
+    }
+
+    private fun restartForDecoder() {
+        val serial = startSerial.incrementAndGet()
+        _error.value = null
+        _phase.value = EnginePhase.Buffering
+        enqueueStart(serial)
     }
 
     /** A scan from an older tune is ignored. The Signal tab reads [VideoStats.interlaced]. */
@@ -430,6 +442,7 @@ class PlaybackEngine(context: Context) {
                 }
             }
             MediaPlayer.Event.EndReached -> {
+                if (pendingUrl != null && mediaSerial != startSerial.get()) return
                 ignoreNextStop = false
                 playingUrl = null
                 abandonAudioFocus()
@@ -442,6 +455,7 @@ class PlaybackEngine(context: Context) {
                 _error.value = PlaybackFailure("The stream ended.", ended = true)
             }
             MediaPlayer.Event.EncounteredError -> {
+                if (pendingUrl != null && mediaSerial != startSerial.get()) return
                 ignoreNextStop = false
                 playingUrl = null
                 if (pendingUrl == null || SystemClock.elapsedRealtime() < ignoreErrorUntilElapsed) {
@@ -462,6 +476,8 @@ class PlaybackEngine(context: Context) {
     }
 
     private fun publishTracks(mediaPlayer: MediaPlayer) {
+        val serial = mediaSerial
+        if (pendingUrl == null || serial != startSerial.get()) return
         val media = runCatching {
             if (!mediaPlayer.hasMedia()) null else mediaPlayer.media
         }.getOrNull() ?: return
@@ -495,6 +511,17 @@ class PlaybackEngine(context: Context) {
                     is IMedia.AudioTrack -> audioTracks += audioReport(track, selectedAudioId, audioNames)
                 }
             }
+            if (serial != startSerial.get()) return
+            val hardwareAvailable = videoMime?.let { hardwareDecoderAvailable(it, hardwareCodecs) } == true
+            if (sourceIsHd == null && height != null) sourceIsHd = height >= 720
+            // Recordings and streams with no HD flag start in software in HD Only mode.
+            // Once the track identifies itself as HD, reopen once with hardware preferred.
+            if (!openedWithHardware && hardwareDecode == HardwareDecodeMode.HdOnly &&
+                sourceIsHd == true && hardwareAvailable
+            ) {
+                restartForDecoder()
+                return
+            }
             val heard = heardAudio(audioTracks)
             val stats = media.stats
             // libvlc reports these rates in bytes per microsecond.
@@ -515,7 +542,7 @@ class PlaybackEngine(context: Context) {
                     hardwareDecoded = usingHardwareDecoder(
                         requested = openedWithHardware,
                         videoPresent = sawVideo,
-                        available = videoMime?.let { hardwareDecoderAvailable(it, hardwareCodecs) } == true,
+                        available = hardwareAvailable,
                     ),
                 )
             }

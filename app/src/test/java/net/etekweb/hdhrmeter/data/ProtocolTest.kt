@@ -78,6 +78,19 @@ class ProtocolTest {
     }
 
     @Test
+    fun softwareDvrCanAdvertiseStorageWithoutATunerDeviceId() {
+        val payload = tlvU32(HdhrPackets.TAG_DEVICE_TYPE, HdhrPackets.DEVICE_TYPE_STORAGE) +
+            tlvText(0x2C, "b253bc89-17cd-468d-80c0-06da679cd123") +
+            tlvText(HdhrPackets.TAG_STORAGE_URL, "http://192.168.1.20:59090/recorded_files.json")
+        val packet = HdhrPackets.seal(HdhrPackets.TYPE_DISCOVER_RPY, payload)
+        assertNull(HdhrPackets.parseDiscoverReply(packet))
+        val storage = HdhrPackets.parseStorageDiscoverReply(packet)
+        assertEquals(0L, storage?.deviceId)
+        assertEquals("b253bc89-17cd-468d-80c0-06da679cd123", storage?.storageId)
+        assertEquals("http://192.168.1.20:59090/recorded_files.json", storage?.storageUrl)
+    }
+
+    @Test
     fun discoverJsonRewritesLocalHostname() {
         val body = """
             {"FriendlyName":"Living Room","ModelNumber":"HDHR5-4US","FirmwareName":"hdhomerun5_atsc",

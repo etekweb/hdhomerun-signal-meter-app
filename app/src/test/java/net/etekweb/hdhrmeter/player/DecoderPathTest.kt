@@ -1,10 +1,19 @@
 package net.etekweb.hdhrmeter.player
 
+import net.etekweb.hdhrmeter.data.HardwareDecodeMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
 class DecoderPathTest {
+    @Test
+    fun hardwarePreferenceHandlesHdSdAndUnknownVideo() {
+        val videoKinds = listOf(true, false, null)
+        assertEquals(listOf(true, true, true), videoKinds.map(HardwareDecodeMode.Always::requestsHardware))
+        assertEquals(listOf(true, false, false), videoKinds.map(HardwareDecodeMode.HdOnly::requestsHardware))
+        assertEquals(listOf(false, false, false), videoKinds.map(HardwareDecodeMode.Never::requestsHardware))
+    }
+
     @Test
     fun softwareStaysSoftwareEvenWhenTheDeviceHasADecoder() {
         assertEquals(false, usingHardwareDecoder(requested = false, videoPresent = true, available = true))

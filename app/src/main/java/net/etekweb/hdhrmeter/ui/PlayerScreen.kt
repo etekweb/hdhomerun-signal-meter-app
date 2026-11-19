@@ -380,11 +380,7 @@ private fun SignalOverlay(
         } else {
             null
         }
-        val recordNotice = if (program != null && state.schedule.noticeStartMs == program.startEpochMs) {
-            state.schedule.notice
-        } else {
-            null
-        }
+        val recordNotice = state.schedule.noticeFor(channel?.guideNumber, program?.startEpochMs)
         val onRecordProgram = if (recordStatus != null && channel != null && program != null) {
             { onRecord(channel.guideNumber, channel.guideName, program) }
         } else {

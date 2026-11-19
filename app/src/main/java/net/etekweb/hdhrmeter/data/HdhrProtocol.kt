@@ -34,6 +34,7 @@ internal object HdhrPackets {
     const val TAG_LINEUP_URL = 0x27
     const val TAG_BASE_URL = 0x2A
     const val TAG_STORAGE_URL = 0x28
+    const val TAG_STORAGE_ID = 0x2C
     const val TAG_MULTI_TYPE = 0x2D
     const val DEVICE_TYPE_TUNER = 0x00000001L
     const val DEVICE_TYPE_STORAGE = 0x00000005L
@@ -124,7 +125,7 @@ internal object HdhrPackets {
 
     fun parseDiscoverReply(datagram: ByteArray): UdpDevice? {
         val device = parseDiscoverFrame(datagram) ?: return null
-        if (device.deviceTypes.isNotEmpty() && DEVICE_TYPE_TUNER !in device.deviceTypes) return null
+        if (device.deviceId == 0L || (device.deviceTypes.isNotEmpty() && DEVICE_TYPE_TUNER !in device.deviceTypes)) return null
         return device
     }
 
@@ -151,6 +152,7 @@ internal object HdhrPackets {
         var baseUrl: String? = null
         var lineupUrl: String? = null
         var storageUrl: String? = null
+        var storageId: String? = null
         val types = mutableListOf<Long>()
         var index = 4
         val end = 4 + length
@@ -171,11 +173,11 @@ internal object HdhrPackets {
                 TAG_BASE_URL -> baseUrl = tlv.text()
                 TAG_LINEUP_URL -> lineupUrl = tlv.text()
                 TAG_STORAGE_URL -> storageUrl = tlv.text()
+                TAG_STORAGE_ID -> storageId = tlv.text()
             }
             index = tlv.next
         }
-        if (deviceId == 0L) return null
-        return UdpDevice(deviceId, tunerCount, baseUrl, lineupUrl, types, storageUrl)
+        return UdpDevice(deviceId, tunerCount, baseUrl, lineupUrl, types, storageUrl, storageId)
     }
 
     private fun writeTlvU32(out: ByteArrayOutputStream, tag: Int, value: Long) {

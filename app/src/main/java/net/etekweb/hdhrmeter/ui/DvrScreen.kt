@@ -267,7 +267,7 @@ private fun RecordingList(
         dvr.loading || !dvr.loaded -> DvrMessage("Looking for recordings…", modifier)
         !dvr.error.isNullOrBlank() -> DvrMessage(dvr.error, modifier, Bad)
         dvr.loaded && dvr.enginesFound == 0 -> {
-            DvrMessage("No HDHomeRun DVR storage answered on the network.", modifier)
+            DvrMessage("No HDHomeRun DVR storage answered. For a separate DVR, add its address in Settings.", modifier)
         }
         dvr.loaded -> DvrMessage("No recordings.", modifier)
     }

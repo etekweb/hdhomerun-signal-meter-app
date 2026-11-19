@@ -472,9 +472,7 @@ fun ChannelsScreen(
                     program,
                     nowMs,
                 ),
-                recordNotice = state.schedule.notice?.takeIf {
-                    state.schedule.noticeStartMs == program.startEpochMs
-                },
+                recordNotice = state.schedule.noticeFor(channel.guideNumber, program.startEpochMs),
                 recordBusy = state.schedule.saving,
                 onRecord = { onRecord(channel.guideNumber, channel.guideName, program) },
                 onClose = { scheduleProgram = null },

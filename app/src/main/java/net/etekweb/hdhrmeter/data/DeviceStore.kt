@@ -11,6 +11,12 @@ class DeviceStore(context: Context) {
         prefs.edit().putString(KEY_HOST, host).apply()
     }
 
+    fun loadDvrAddress(): String = prefs.getString(KEY_DVR_ADDRESS, "").orEmpty()
+
+    fun saveDvrAddress(address: String) {
+        prefs.edit().putString(KEY_DVR_ADDRESS, address).apply()
+    }
+
     fun loadGuideLibrary(): GuideLibrary {
         if (prefs.contains(KEY_GUIDE_SOURCES)) {
             val mode = if (prefs.contains(KEY_GUIDE_MODE)) prefs.getString(KEY_GUIDE_MODE, null) else null
@@ -135,11 +141,18 @@ class DeviceStore(context: Context) {
         prefs.edit().putString(KEY_CHANNEL_STRETCH, encodeChannelStretches(stretches)).apply()
     }
 
-    /** Off unless the viewer turns hardware decoding on in Settings. */
-    fun loadHardwareDecode(): Boolean = prefs.getBoolean(KEY_HARDWARE_DECODE, false)
+    fun loadHardwareDecode(): HardwareDecodeMode {
+        val saved = prefs.getString(KEY_HARDWARE_DECODE_MODE, null)
+        return when {
+            saved != null -> HardwareDecodeMode.entries.firstOrNull { it.name == saved } ?: HardwareDecodeMode.HdOnly
+            !prefs.contains(KEY_HARDWARE_DECODE) -> HardwareDecodeMode.HdOnly
+            prefs.getBoolean(KEY_HARDWARE_DECODE, false) -> HardwareDecodeMode.Always
+            else -> HardwareDecodeMode.Never
+        }
+    }
 
-    fun saveHardwareDecode(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_HARDWARE_DECODE, enabled).apply()
+    fun saveHardwareDecode(mode: HardwareDecodeMode) {
+        prefs.edit().putString(KEY_HARDWARE_DECODE_MODE, mode.name).apply()
     }
 
     fun loadShowChannelNumber(): Boolean = prefs.getBoolean(KEY_SHOW_CHANNEL_NUMBER, false)
@@ -159,6 +172,7 @@ class DeviceStore(context: Context) {
     private companion object {
         const val PREFS = "hdhr_meter"
         const val KEY_HOST = "manual_host"
+        const val KEY_DVR_ADDRESS = "dvr_address"
         const val KEY_GUIDE_HOST = "guide_host"
         const val KEY_GUIDE_SOURCES = "guide_sources"
         const val KEY_GUIDE_ACTIVE = "guide_active"
@@ -168,6 +182,7 @@ class DeviceStore(context: Context) {
         const val KEY_OVERLAY_TAB = "overlay_tab"
         const val KEY_CHANNEL_STRETCH = "channel_stretch"
         const val KEY_HARDWARE_DECODE = "hardware_decode"
+        const val KEY_HARDWARE_DECODE_MODE = "hardware_decode_mode"
         const val KEY_SHOW_CHANNEL_NUMBER = "show_channel_number"
         const val KEY_STORAGE_FORECAST = "storage_forecast"
         const val KEY_ID = "device_id"
