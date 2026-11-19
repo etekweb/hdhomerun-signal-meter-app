@@ -62,6 +62,7 @@ import net.etekweb.hdhrmeter.ui.Screen
 import net.etekweb.hdhrmeter.ui.inPlayer
 import net.etekweb.hdhrmeter.ui.isTelevision
 import net.etekweb.hdhrmeter.ui.isTelevisionUi
+import net.etekweb.hdhrmeter.ui.remoteChannelStep
 import net.etekweb.hdhrmeter.ui.televisionBackHidesPlayerOverlay
 import net.etekweb.hdhrmeter.ui.televisionRemoteRevealsOverlay
 import net.etekweb.hdhrmeter.ui.SettingsScreen
@@ -70,6 +71,7 @@ import org.videolan.libvlc.util.VLCVideoLayout
 
 class MainActivity : ComponentActivity() {
     private var playback by mutableStateOf<PlaybackService.Connection?>(null)
+    private var scrollLineupPage: ((Int) -> Unit)? = null
     private var bound = false
     private var hostStarted = false
     private var videoLayout: VLCVideoLayout? = null
@@ -258,6 +260,7 @@ class MainActivity : ComponentActivity() {
                                     ChannelsScreen(
                                         state = state,
                                         device = device,
+                                        onPageHandlerChanged = { scrollLineupPage = it },
                                         onRefresh = viewModel::refreshLineup,
                                         onQuery = viewModel::setQuery,
                                         onFilter = viewModel::setFilter,
@@ -339,11 +342,26 @@ class MainActivity : ComponentActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val viewModel = playback?.viewModel ?: return super.dispatchKeyEvent(event)
         val state = viewModel.ui.value
+        val television = isTelevisionUi(resources.configuration.uiMode)
+        val chromeVisible = !inPip && !enteringPip
+        val channelStep = remoteChannelStep(event.keyCode)
+        if (television && chromeVisible && channelStep != null && state.schedule.pending == null) {
+            val pressed = event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0
+            if (state.screen is Screen.Watch) {
+                if (pressed) viewModel.stepChannel(channelStep)
+                return true
+            }
+            val scrollPage = scrollLineupPage
+            if (state.screen == Screen.Shell && state.tab == AppTab.Lineup && scrollPage != null) {
+                if (pressed) scrollPage(-channelStep)
+                return true
+            }
+        }
         val reveal = televisionRemoteRevealsOverlay(
-            television = isTelevisionUi(resources.configuration.uiMode),
+            television = television,
             playing = state.screen.inPlayer,
             overlayVisible = state.overlayVisible,
-            chromeVisible = !inPip && !enteringPip,
+            chromeVisible = chromeVisible,
             keyCode = event.keyCode,
         )
         if (reveal) {

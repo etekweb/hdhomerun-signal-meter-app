@@ -1,7 +1,9 @@
 package net.etekweb.hdhrmeter.ui
 
 import net.etekweb.hdhrmeter.data.Channel
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -42,5 +44,33 @@ class ChannelQueryTest {
         assertTrue(channelMatchesQuery(channel, "news", "Jeopardy!", "Nightly News"))
         assertFalse(channelMatchesQuery(channel, "news", "Jeopardy!", "Later Show"))
         assertFalse(channelMatchesQuery(channel, "news", "Jeopardy!", null))
+    }
+
+    @Test
+    fun surfReturnClearsSearchAndFilterOnlyWhenTheyHideTheTunedChannel() {
+        val state = UiState(
+            channels = listOf(channel),
+            filter = ChannelFilter.Favorites,
+            query = "another station",
+            lineupReturn = LineupReturn(channel, programStartMs = null, scrollToChannel = true),
+        )
+
+        val revealed = state.revealSurfedChannel()
+        assertEquals(ChannelFilter.All, revealed.filter)
+        assertEquals("", revealed.query)
+        assertEquals(channel, revealed.lineupReturn?.channel)
+
+        val matching = state.copy(filter = ChannelFilter.Recents, query = "WJBK").revealSurfedChannel()
+        assertEquals(ChannelFilter.Recents, matching.filter)
+        assertEquals("WJBK", matching.query)
+    }
+
+    @Test
+    fun returnWithoutSurfingKeepsTheOriginalLineupState() {
+        val state = UiState(
+            query = "WJBK",
+            lineupReturn = LineupReturn(channel, programStartMs = 123L),
+        )
+        assertSame(state, state.revealSurfedChannel())
     }
 }

@@ -77,6 +77,12 @@ private const val SKIP_SETTLE_MS = 500L
 
 enum class ChannelFilter { All, Hd, Favorites, Recents }
 
+internal fun ChannelFilter.includes(channel: Channel): Boolean = when (this) {
+    ChannelFilter.All, ChannelFilter.Recents -> true
+    ChannelFilter.Hd -> channel.hd || channel.atsc3
+    ChannelFilter.Favorites -> channel.favorite
+}
+
 /** Player overlay page. [Info] is the default until the viewer picks another page. */
 enum class OverlayTab { Info, Signal, Playback }
 
@@ -141,7 +147,11 @@ data class SignalPeaks(
     }
 }
 
-data class LineupReturn(val channel: Channel, val programStartMs: Long?)
+data class LineupReturn(
+    val channel: Channel,
+    val programStartMs: Long?,
+    val scrollToChannel: Boolean = false,
+)
 
 data class UiState(
     val screen: Screen = Screen.Shell,
@@ -180,7 +190,7 @@ data class UiState(
     val query: String = "",
     val filter: ChannelFilter = ChannelFilter.All,
     val recentChannels: List<String> = emptyList(),
-    /** Lineup entry that opened the live player. */
+    /** Lineup entry to return to after live playback. */
     val lineupReturn: LineupReturn? = null,
     val pendingChannel: Channel? = null,
     /** Skip taps still combining. The picture seeks when this clears. */
@@ -206,6 +216,20 @@ data class UiState(
     val hardwareDecode: HardwareDecodeMode = HardwareDecodeMode.HdOnly,
     val showChannelNumber: Boolean = false,
 )
+
+internal fun UiState.revealSurfedChannel(): UiState {
+    val target = lineupReturn?.takeIf { it.scrollToChannel } ?: return this
+    val channel = channels.firstOrNull {
+        it.guideNumber == target.channel.guideNumber && it.streamUrl == target.channel.streamUrl
+    } ?: target.channel
+    val program = guide?.airing(channel.guideNumber, channel.guideName, guideNowMs)
+    val upcoming = guide?.upcoming(channel.guideNumber, channel.guideName, guideNowMs)
+    return copy(
+        lineupReturn = target.copy(channel = channel, programStartMs = program?.startEpochMs),
+        filter = if (filter.includes(channel)) filter else ChannelFilter.All,
+        query = query.takeIf { channelMatchesQuery(channel, it, program?.title, upcoming?.title) }.orEmpty(),
+    )
+}
 
 /**
  * Where the picture is in the timeshift buffer.
@@ -1518,6 +1542,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                     state.copy(
                         pendingChannel = null,
                         screen = Screen.Watch(watching.device, next),
+                        lineupReturn = LineupReturn(next, programStartMs = null, scrollToChannel = true),
                         transcoding = false,
                     )
                 }
@@ -1578,8 +1603,8 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         when (_ui.value.screen) {
             is Screen.Watch -> {
                 cancelChannelHop()
-                _ui.update {
-                    it.copy(
+                _ui.update { state ->
+                    state.revealSurfedChannel().copy(
                         screen = Screen.Shell,
                         tab = AppTab.Lineup,
                         playbackError = null,

@@ -57,6 +57,16 @@ class PlayerRemoteTest {
     }
 
     @Test
+    fun channelKeysStepInTheSameDirectionAsTheOnScreenButtons() {
+        assertEquals(1, remoteChannelStep(KeyEvent.KEYCODE_CHANNEL_UP))
+        assertEquals(-1, remoteChannelStep(KeyEvent.KEYCODE_CHANNEL_DOWN))
+        assertNull(remoteChannelStep(KeyEvent.KEYCODE_DPAD_UP))
+        assertNull(remoteChannelStep(KeyEvent.KEYCODE_DPAD_DOWN))
+        assertFalse(isPlayerRevealKeyCode(KeyEvent.KEYCODE_CHANNEL_UP))
+        assertFalse(isPlayerRevealKeyCode(KeyEvent.KEYCODE_CHANNEL_DOWN))
+    }
+
+    @Test
     fun revealIgnoresPhonesVisibleChromeAndOtherKeys() {
         assertFalse(
             televisionRemoteRevealsOverlay(

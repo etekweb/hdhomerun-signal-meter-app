@@ -6,6 +6,7 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,6 +25,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -64,7 +66,9 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import net.etekweb.hdhrmeter.R
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -80,14 +84,19 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.relocation.BringIntoViewModifierNode
+import androidx.compose.ui.relocation.bringIntoView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.semantics
@@ -96,6 +105,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel as PageChannel
 import kotlinx.coroutines.flow.first
 import net.etekweb.hdhrmeter.data.Channel
 import net.etekweb.hdhrmeter.data.AiringRecordStatus
@@ -232,6 +242,7 @@ private fun ChannelSearchTopBar(
 fun ChannelsScreen(
     state: UiState,
     device: HdhrDevice,
+    onPageHandlerChanged: (((Int) -> Unit)?) -> Unit,
     onRefresh: () -> Unit,
     onQuery: (String) -> Unit,
     onFilter: (ChannelFilter) -> Unit,
@@ -250,23 +261,22 @@ fun ChannelsScreen(
     val query = state.query.trim()
     val guide = state.guide
     val nowMs = state.guideNowMs
+    val lineupReturn = state.lineupReturn
+    val scrollToChannel = lineupReturn?.scrollToChannel == true
     val matched = state.channels.filter { channel ->
         val programTitle = guide?.airing(channel.guideNumber, channel.guideName, nowMs)?.title
         val upcomingTitle = guide?.upcoming(channel.guideNumber, channel.guideName, nowMs)?.title
         val matchesQuery = channelMatchesQuery(channel, query, programTitle, upcomingTitle)
-        val matchesFilter = when (state.filter) {
-            ChannelFilter.All -> true
-            ChannelFilter.Hd -> channel.hd || channel.atsc3
-            ChannelFilter.Favorites -> channel.favorite
-            ChannelFilter.Recents -> true
-        }
-        matchesQuery && matchesFilter
+        matchesQuery && state.filter.includes(channel)
     }
     val shown = if (state.filter == ChannelFilter.Recents) {
-        // Playback updates recency. Keep the order of this view so the saved
-        // scroll offset still shows the same entries when the player closes.
-        val recentChannels = rememberSaveable { ArrayList(state.recentChannels) }
-        channelsInViewOrder(matched, recentChannels)
+        // Keep the previous ordering when restoring a physical scroll offset.
+        // A surf return uses the updated Recents so the new channel is in the list.
+        var recentChannels by rememberSaveable { mutableStateOf(ArrayList(state.recentChannels)) }
+        if (scrollToChannel) {
+            SideEffect { recentChannels = ArrayList(state.recentChannels) }
+        }
+        channelsInViewOrder(matched, if (scrollToChannel) state.recentChannels else recentChannels)
     } else {
         matched
     }
@@ -274,30 +284,40 @@ fun ChannelsScreen(
     var scheduleProgram by remember { mutableStateOf<GuideProgram?>(null) }
     val listState = key(state.filter) { rememberLazyListState() }
     val television = isTelevision()
-    val lineupReturn = state.lineupReturn
+    val lineupFocus = if (television) remember { LineupFocus() } else null
+    if (lineupFocus != null) {
+        val pages = remember(listState) { PageChannel<Int>(PageChannel.UNLIMITED) }
+        DisposableEffect(pages) {
+            onPageHandlerChanged { direction -> pages.trySend(direction) }
+            onDispose {
+                onPageHandlerChanged(null)
+                pages.close()
+            }
+        }
+        LaunchedEffect(pages, lineupFocus) {
+            for (direction in pages) lineupFocus.page(listState, direction)
+        }
+    }
     val returnChannelKey = lineupReturn?.channel?.let(::lineupChannelKey)
-    val returnIndex = if (television && returnChannelKey != null) {
+    val returnIndex = if ((television || scrollToChannel) && returnChannelKey != null) {
         shown.indexOfFirst { lineupChannelKey(it) == returnChannelKey }
     } else {
         -1
     }
-    val returnFocus = remember(returnChannelKey) { FocusRequester() }
     val waitingForChannels = state.channelsLoading && shown.isEmpty()
-    LaunchedEffect(lineupReturn, waitingForChannels, television, returnIndex, listState) {
+    LaunchedEffect(lineupReturn, waitingForChannels, lineupFocus, returnIndex, listState) {
         if (lineupReturn == null || waitingForChannels) return@LaunchedEffect
-        if (television) {
-            if (returnIndex >= 0) {
+        if (returnIndex >= 0) {
+            if (scrollToChannel) {
+                listState.scrollToItem(returnIndex)
+            } else {
                 // Let the restored scroll position lay out before deciding whether to scroll.
-                val layout = snapshotFlow { listState.layoutInfo }
-                    .first { it.totalItemsCount > returnIndex }
-                if (layout.visibleItemsInfo.none { it.key == returnChannelKey }) {
-                    listState.scrollToItem(returnIndex)
-                }
-                returnFocus.requestFocus()
+                val layout = snapshotFlow { listState.layoutInfo }.first { it.totalItemsCount > returnIndex }
+                if (layout.visibleItemsInfo.none { it.key == returnChannelKey }) listState.scrollToItem(returnIndex)
             }
-        } else {
-            delay(150)
+            lineupFocus?.requestWatchFocus(returnChannelKey, keepScrollPosition = scrollToChannel)
         }
+        if (!television) delay(150)
         onLineupReturnHandled()
     }
     var searchOpen by rememberSaveable { mutableStateOf(state.query.isNotEmpty()) }
@@ -438,20 +458,17 @@ fun ChannelsScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         items(shown, key = ::lineupChannelKey) { channel ->
+                            val channelKey = lineupChannelKey(channel)
                             val program = guide?.airing(channel.guideNumber, channel.guideName, nowMs)
-                            val isReturnChannel = lineupChannelKey(channel) == returnChannelKey
+                            val watchModifier = lineupFocus?.watchModifier(channelKey) ?: Modifier
                             ChannelRow(
                                 channel,
                                 program = program,
                                 upcoming = guide?.upcoming(channel.guideNumber, channel.guideName, nowMs),
                                 nowMs = nowMs,
-                                returnHighlighted = !television && isReturnChannel &&
+                                returnHighlighted = !television && channelKey == returnChannelKey &&
                                     lineupReturn.programStartMs == program?.startEpochMs,
-                                watchModifier = if (television && isReturnChannel) {
-                                    Modifier.focusRequester(returnFocus)
-                                } else {
-                                    Modifier
-                                },
+                                watchModifier = watchModifier,
                                 onWatch = { onWatch(channel, program?.startEpochMs) },
                                 onOpenGuide = {
                                     scheduleProgram = null
@@ -700,6 +717,64 @@ private fun FilterChoice(label: String, selected: Boolean, onClick: () -> Unit) 
 }
 
 private fun lineupChannelKey(channel: Channel): String = "${channel.guideNumber}|${channel.streamUrl}"
+
+private class LineupFocus {
+    private val watchControls = mutableMapOf<Any, FocusRequester>()
+    private var keepScrollPosition = false
+
+    @Composable
+    fun watchModifier(channelKey: String): Modifier {
+        val requester = remember { FocusRequester() }
+        DisposableEffect(this, channelKey, requester) {
+            watchControls[channelKey] = requester
+            onDispose { watchControls.remove(channelKey, requester) }
+        }
+        return Modifier.focusRequester(requester).then(WatchScrollElement(this))
+    }
+
+    suspend fun page(listState: LazyListState, direction: Int) {
+        val viewportHeight = listState.layoutInfo.viewportSize.height
+        if (viewportHeight == 0) return
+        val previousTop = listState.firstVisibleItemIndex
+        listState.scrollBy(direction * viewportHeight.toFloat())
+
+        val nextTop = listState.firstVisibleItemIndex
+        if (nextTop != previousTop && listState.firstVisibleItemScrollOffset != 0 && listState.canScrollForward) {
+            // Show the whole program at the page boundary without skipping a partially visible row.
+            listState.scrollToItem(nextTop)
+        }
+        val top = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == listState.firstVisibleItemIndex }
+        requestWatchFocus(top?.key, keepScrollPosition = true)
+    }
+
+    fun requestWatchFocus(channelKey: Any?, keepScrollPosition: Boolean) {
+        val requester = watchControls[channelKey] ?: return
+        this.keepScrollPosition = keepScrollPosition
+        try {
+            requester.requestFocus()
+        } finally {
+            this.keepScrollPosition = false
+        }
+    }
+
+    private data class WatchScrollElement(val focus: LineupFocus) : ModifierNodeElement<WatchScrollNode>() {
+        override fun create() = WatchScrollNode(focus)
+
+        override fun update(node: WatchScrollNode) {
+            node.focus = focus
+        }
+    }
+
+    private class WatchScrollNode(var focus: LineupFocus) : Modifier.Node(), BringIntoViewModifierNode {
+        override suspend fun bringIntoView(
+            childCoordinates: LayoutCoordinates,
+            boundsProvider: () -> Rect?,
+        ) {
+            // Paging already positioned the list. Skip the TV focus pivot for this request.
+            if (!focus.keepScrollPosition) bringIntoView()
+        }
+    }
+}
 
 @Composable
 private fun ChannelRow(

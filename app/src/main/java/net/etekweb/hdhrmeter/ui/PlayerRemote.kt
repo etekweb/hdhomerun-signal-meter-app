@@ -49,6 +49,12 @@ internal fun isTelevisionUi(uiMode: Int): Boolean {
     return uiMode and Configuration.UI_MODE_TYPE_MASK == Configuration.UI_MODE_TYPE_TELEVISION
 }
 
+internal fun remoteChannelStep(keyCode: Int): Int? = when (keyCode) {
+    KeyEvent.KEYCODE_CHANNEL_UP -> 1
+    KeyEvent.KEYCODE_CHANNEL_DOWN -> -1
+    else -> null
+}
+
 /** Direction pad and OK. Media keys stay on their own path. */
 internal fun isPlayerRevealKeyCode(keyCode: Int): Boolean = when (keyCode) {
     KeyEvent.KEYCODE_DPAD_UP,
