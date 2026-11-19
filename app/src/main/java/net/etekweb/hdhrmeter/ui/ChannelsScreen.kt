@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
@@ -68,12 +69,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
@@ -83,6 +87,7 @@ import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.semantics
@@ -91,6 +96,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import net.etekweb.hdhrmeter.data.Channel
 import net.etekweb.hdhrmeter.data.AiringRecordStatus
 import net.etekweb.hdhrmeter.data.GuideProgram
@@ -143,7 +149,7 @@ private fun ChannelSearchTopBar(
     }
     TopAppBar(
         navigationIcon = {
-            IconButton(onClick = onClose) {
+            IconButton(onClick = onClose, modifier = Modifier.tvFocusBorder()) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close search")
             }
         },
@@ -155,6 +161,7 @@ private fun ChannelSearchTopBar(
                     .fillMaxWidth()
                     .padding(end = if (query.isEmpty()) 16.dp else 0.dp)
                     .heightIn(min = 48.dp)
+                    .tvFocusBorder()
                     .focusRequester(focusRequester)
                     .onFocusChanged { focused = it.isFocused }
                     .semantics {
@@ -200,6 +207,7 @@ private fun ChannelSearchTopBar(
         actions = {
             if (query.isNotEmpty()) {
                 IconButton(
+                    modifier = Modifier.tvFocusBorder(),
                     onClick = {
                         onQuery("")
                         focusRequester.requestFocus()
@@ -228,7 +236,7 @@ fun ChannelsScreen(
     onQuery: (String) -> Unit,
     onFilter: (ChannelFilter) -> Unit,
     onWatch: (Channel, Long?) -> Unit,
-    onReturnHighlightFinished: () -> Unit,
+    onLineupReturnHandled: () -> Unit,
     onOpenTuners: () -> Unit,
     onCloseTuners: () -> Unit,
     onRefreshTuners: () -> Unit,
@@ -265,12 +273,32 @@ fun ChannelsScreen(
     var scheduleChannel by remember { mutableStateOf<Channel?>(null) }
     var scheduleProgram by remember { mutableStateOf<GuideProgram?>(null) }
     val listState = key(state.filter) { rememberLazyListState() }
+    val television = isTelevision()
     val lineupReturn = state.lineupReturn
+    val returnChannelKey = lineupReturn?.channel?.let(::lineupChannelKey)
+    val returnIndex = if (television && returnChannelKey != null) {
+        shown.indexOfFirst { lineupChannelKey(it) == returnChannelKey }
+    } else {
+        -1
+    }
+    val returnFocus = remember(returnChannelKey) { FocusRequester() }
     val waitingForChannels = state.channelsLoading && shown.isEmpty()
-    LaunchedEffect(lineupReturn, waitingForChannels) {
+    LaunchedEffect(lineupReturn, waitingForChannels, television, returnIndex, listState) {
         if (lineupReturn == null || waitingForChannels) return@LaunchedEffect
-        delay(150)
-        onReturnHighlightFinished()
+        if (television) {
+            if (returnIndex >= 0) {
+                // Let the restored scroll position lay out before deciding whether to scroll.
+                val layout = snapshotFlow { listState.layoutInfo }
+                    .first { it.totalItemsCount > returnIndex }
+                if (layout.visibleItemsInfo.none { it.key == returnChannelKey }) {
+                    listState.scrollToItem(returnIndex)
+                }
+                returnFocus.requestFocus()
+            }
+        } else {
+            delay(150)
+        }
+        onLineupReturnHandled()
     }
     var searchOpen by rememberSaveable { mutableStateOf(state.query.isNotEmpty()) }
     var grabFocus by remember { mutableStateOf(false) }
@@ -310,6 +338,7 @@ fun ChannelsScreen(
                     actions = {
                         BarTooltip("Search") {
                             IconButton(
+                                modifier = Modifier.tvFocusBorder(),
                                 onClick = {
                                     grabFocus = true
                                     searchOpen = true
@@ -319,7 +348,7 @@ fun ChannelsScreen(
                             }
                         }
                         BarTooltip("Tuners") {
-                            IconButton(onClick = onOpenTuners) {
+                            IconButton(onClick = onOpenTuners, modifier = Modifier.tvFocusBorder()) {
                                 Icon(
                                     painterResource(R.drawable.ic_tuners),
                                     contentDescription = "Tuners",
@@ -327,7 +356,11 @@ fun ChannelsScreen(
                             }
                         }
                         BarTooltip("Refresh channels") {
-                            IconButton(onClick = onRefresh, enabled = !state.channelsLoading) {
+                            IconButton(
+                                onClick = onRefresh,
+                                enabled = !state.channelsLoading,
+                                modifier = Modifier.tvFocusBorder(),
+                            ) {
                                 Icon(Icons.Filled.Refresh, contentDescription = "Refresh channels")
                             }
                         }
@@ -404,17 +437,21 @@ fun ChannelsScreen(
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        items(shown, key = { "${it.guideNumber}|${it.streamUrl}" }) { channel ->
+                        items(shown, key = ::lineupChannelKey) { channel ->
                             val program = guide?.airing(channel.guideNumber, channel.guideName, nowMs)
+                            val isReturnChannel = lineupChannelKey(channel) == returnChannelKey
                             ChannelRow(
                                 channel,
                                 program = program,
                                 upcoming = guide?.upcoming(channel.guideNumber, channel.guideName, nowMs),
                                 nowMs = nowMs,
-                                returnHighlighted = lineupReturn != null &&
-                                    lineupReturn.channel.guideNumber == channel.guideNumber &&
-                                    lineupReturn.channel.streamUrl == channel.streamUrl &&
+                                returnHighlighted = !television && isReturnChannel &&
                                     lineupReturn.programStartMs == program?.startEpochMs,
+                                watchModifier = if (television && isReturnChannel) {
+                                    Modifier.focusRequester(returnFocus)
+                                } else {
+                                    Modifier
+                                },
                                 onWatch = { onWatch(channel, program?.startEpochMs) },
                                 onOpenGuide = {
                                     scheduleProgram = null
@@ -525,6 +562,7 @@ private fun TunersDialog(
                     IconButton(
                         onClick = onRefresh,
                         enabled = !panel.loading && panel.clearing == null,
+                        modifier = Modifier.tvFocusBorder(),
                     ) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh tuners", tint = Amber)
                     }
@@ -569,7 +607,7 @@ private fun TunersDialog(
                         modifier = Modifier.padding(top = 12.dp),
                     )
                 }
-                TextButton(onClick = onClose, modifier = Modifier.align(Alignment.End)) {
+                TextButton(onClick = onClose, modifier = Modifier.align(Alignment.End).tvFocusBorder()) {
                     Text("Close")
                 }
             }
@@ -614,7 +652,7 @@ private fun TunerStatusRow(
             }
         }
         if (row.inUse) {
-            TextButton(onClick = onClear, enabled = clearing == null) {
+            TextButton(onClick = onClear, enabled = clearing == null, modifier = Modifier.tvFocusBorder()) {
                 if (clearing == row.index) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(18.dp),
@@ -653,8 +691,15 @@ private fun GuideStatus(state: UiState) {
 
 @Composable
 private fun FilterChoice(label: String, selected: Boolean, onClick: () -> Unit) {
-    FilterChip(selected = selected, onClick = onClick, label = { Text(label) })
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(label) },
+        modifier = Modifier.tvFocusBorder(),
+    )
 }
+
+private fun lineupChannelKey(channel: Channel): String = "${channel.guideNumber}|${channel.streamUrl}"
 
 @Composable
 private fun ChannelRow(
@@ -663,9 +708,12 @@ private fun ChannelRow(
     upcoming: GuideProgram?,
     nowMs: Long,
     returnHighlighted: Boolean,
+    watchModifier: Modifier,
     onWatch: () -> Unit,
     onOpenGuide: () -> Unit,
 ) {
+    val television = isTelevision()
+    val watchStartPadding = if (television) 8.dp else 0.dp
     val cardColor by animateColorAsState(
         targetValue = if (returnHighlighted) {
             Color.White.copy(alpha = 0.16f).compositeOver(InkRaised)
@@ -690,6 +738,7 @@ private fun ChannelRow(
                 Column(
                     Modifier
                         .fillMaxHeight()
+                        .tvFocusBorder(MaterialTheme.shapes.medium)
                         .clickable(
                             role = Role.Button,
                             onClickLabel = "Open channel guide",
@@ -722,16 +771,17 @@ private fun ChannelRow(
                         .background(MaterialTheme.colorScheme.outline),
                 )
                 Box(
-                    Modifier
+                    watchModifier
                         .weight(1f)
                         .fillMaxHeight()
+                        .tvFocusBorder(MaterialTheme.shapes.medium)
                         .clickable(
                             role = Role.Button,
                             onClickLabel = "Watch",
                             onClick = onWatch,
                         ),
                 ) {
-                    Column(Modifier.padding(end = 12.dp, top = 12.dp, bottom = 12.dp)) {
+                    Column(Modifier.padding(start = watchStartPadding, end = 12.dp, top = 12.dp, bottom = 12.dp)) {
                         if (program != null) {
                             Text(
                                 program.title,
@@ -756,7 +806,11 @@ private fun ChannelRow(
                             progress = { progress },
                             modifier = Modifier
                                 .align(Alignment.TopCenter)
-                                .padding(end = 12.dp)
+                                .padding(
+                                    start = watchStartPadding,
+                                    end = 12.dp,
+                                    top = if (television) 4.dp else 0.dp,
+                                )
                                 .fillMaxWidth()
                                 .height(2.dp)
                                 .semantics { contentDescription = "Current program progress" },
@@ -788,6 +842,8 @@ private fun ChannelGuideDialog(
     onOpenProgram: (GuideProgram) -> Unit,
 ) {
     val entries = channelGuideEntries(programs, nowMs)
+    val firstProgramIndex = entries.indexOfFirst { it is ChannelGuideEntry.Airing }
+    val television = isTelevision()
     val dialogHeight = (LocalConfiguration.current.screenHeightDp - 48).dp
     Dialog(
         onDismissRequest = onClose,
@@ -797,6 +853,20 @@ private fun ChannelGuideDialog(
         ),
     ) {
         BackHandler(onBack = onClose)
+        val listState = rememberLazyListState()
+        val firstProgramFocus = remember { FocusRequester() }
+        val favoriteFocus = remember { FocusRequester() }
+        if (television) {
+            val window = LocalWindowInfo.current
+            val initialIndex by rememberUpdatedState(firstProgramIndex)
+            LaunchedEffect(window) {
+                // The guide can finish loading after the dialog opens.
+                snapshotFlow {
+                    window.isWindowFocused && listState.layoutInfo.visibleItemsInfo.any { it.index == initialIndex }
+                }.first { it }
+                firstProgramFocus.requestFocus()
+            }
+        }
         Surface(
             color = Ink,
             shape = MaterialTheme.shapes.large,
@@ -824,7 +894,10 @@ private fun ChannelGuideDialog(
                             IconButton(
                                 onClick = onToggleFavorite,
                                 enabled = !favoriteSaving,
-                                modifier = Modifier.alpha(if (favoriteSaving) 0.45f else 1f),
+                                modifier = Modifier
+                                    .alpha(if (favoriteSaving) 0.45f else 1f)
+                                    .then(if (television) Modifier.focusRequester(favoriteFocus) else Modifier)
+                                    .tvFocusBorder(),
                             ) {
                                 if (channel.favorite) {
                                     Icon(
@@ -849,7 +922,7 @@ private fun ChannelGuideDialog(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    IconButton(onClick = onClose) {
+                    IconButton(onClick = onClose, modifier = Modifier.tvFocusBorder()) {
                         Icon(Icons.Filled.Close, contentDescription = "Close guide", tint = Paper)
                     }
                 }
@@ -873,26 +946,34 @@ private fun ChannelGuideDialog(
                 when {
                     entries.isNotEmpty() -> {
                         LazyColumn(
+                            state = listState,
                             modifier = Modifier.weight(1f),
                             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            items(
+                            itemsIndexed(
                                 entries,
-                                key = { entry ->
+                                key = { _, entry ->
                                     when (entry) {
                                         is ChannelGuideEntry.Day -> "day-${entry.dateKey}"
                                         is ChannelGuideEntry.Airing ->
                                             "${entry.program.startEpochMs}|${entry.program.stopEpochMs}|${entry.program.title}"
                                     }
                                 },
-                            ) { entry ->
+                            ) { index, entry ->
                                 when (entry) {
                                     is ChannelGuideEntry.Day -> GuideDayHeading(entry.label)
                                     is ChannelGuideEntry.Airing -> GuideProgramRow(
                                         entry.program,
                                         onNow = entry.onNow,
                                         onClick = { onOpenProgram(entry.program) },
+                                        modifier = if (television && index == firstProgramIndex) {
+                                            Modifier.focusRequester(firstProgramFocus).focusProperties {
+                                                up = if (favoriteSaving) FocusRequester.Default else favoriteFocus
+                                            }
+                                        } else {
+                                            Modifier
+                                        },
                                     )
                                 }
                             }
@@ -933,6 +1014,7 @@ private fun GuideProgramRow(
     program: GuideProgram,
     onNow: Boolean,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val episode = formatEpisodeSummary(program.episode, program.subtitle)
     val blurb = program.description?.trim()?.ifBlank { null }
@@ -940,7 +1022,7 @@ private fun GuideProgramRow(
         onClick = onClick,
         color = InkRaised,
         shape = MaterialTheme.shapes.medium,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().tvFocusBorder(MaterialTheme.shapes.medium),
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1026,7 +1108,7 @@ private fun ProgramDetailDialog(
                             .weight(1f)
                             .padding(top = 10.dp),
                     )
-                    IconButton(onClick = onClose) {
+                    IconButton(onClick = onClose, modifier = Modifier.tvFocusBorder()) {
                         Icon(Icons.Filled.Close, contentDescription = "Close", tint = Paper)
                     }
                 }

@@ -8,7 +8,6 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -1534,12 +1533,6 @@ private fun ChannelStepButton(
     ) {
         Text(label)
     }
-}
-
-/** White outline so the direction pad's landing spot is visible from across the room. */
-private fun Modifier.tvFocusBorder(highlight: Boolean): Modifier {
-    if (!highlight) return this
-    return border(3.dp, Color.White, RoundedCornerShape(8.dp))
 }
 
 @Composable

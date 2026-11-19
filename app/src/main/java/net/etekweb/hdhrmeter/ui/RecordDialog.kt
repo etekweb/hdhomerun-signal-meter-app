@@ -62,7 +62,7 @@ fun RecordProgramButton(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Button(onClick = onClick, enabled = enabled) { Text("Record") }
+            Button(onClick = onClick, enabled = enabled, modifier = Modifier.tvFocusBorder()) { Text("Record") }
             status.label()?.let { label ->
                 Text(label, color = status.color(), style = MaterialTheme.typography.labelLarge)
             }
@@ -215,7 +215,9 @@ fun RecordConfirmDialog(
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    TextButton(onClick = onDismiss, enabled = !saving) { Text("Cancel") }
+                    TextButton(onClick = onDismiss, enabled = !saving, modifier = Modifier.tvFocusBorder()) {
+                        Text("Cancel")
+                    }
                     Spacer(Modifier.width(8.dp))
                     Button(
                         onClick = {
@@ -227,6 +229,7 @@ fun RecordConfirmDialog(
                             }
                         },
                         enabled = !saving,
+                        modifier = Modifier.tvFocusBorder(),
                     ) {
                         if (saving) {
                             CircularProgressIndicator(
@@ -329,7 +332,9 @@ fun ScheduledPaddingDialog(
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    TextButton(onClick = onDismiss, enabled = !saving) { Text("Cancel") }
+                    TextButton(onClick = onDismiss, enabled = !saving, modifier = Modifier.tvFocusBorder()) {
+                        Text("Cancel")
+                    }
                     Spacer(Modifier.width(8.dp))
                     Button(
                         onClick = {
@@ -339,6 +344,7 @@ fun ScheduledPaddingDialog(
                             }
                         },
                         enabled = !saving,
+                        modifier = Modifier.tvFocusBorder(),
                     ) {
                         if (saving) {
                             CircularProgressIndicator(
@@ -386,7 +392,7 @@ private fun PaddingField(value: String, enabled: Boolean, onValue: (String) -> U
         onValueChange = onValue,
         enabled = enabled,
         singleLine = true,
-        modifier = Modifier.width(76.dp).heightIn(min = 52.dp),
+        modifier = Modifier.width(76.dp).heightIn(min = 52.dp).tvFocusBorder(),
         textStyle = MaterialTheme.typography.bodyLarge.copy(color = Paper),
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         colors = OutlinedTextFieldDefaults.colors(

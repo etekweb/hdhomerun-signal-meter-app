@@ -66,7 +66,7 @@ internal fun StorageDialog(
             ) {
                 Text("Storage", color = Paper, modifier = Modifier.weight(1f))
                 Row(
-                    Modifier.toggleable(
+                    Modifier.tvFocusBorder().toggleable(
                         value = forecastEnabled,
                         role = Role.Switch,
                         onValueChange = onForecastChange,
@@ -113,7 +113,9 @@ internal fun StorageDialog(
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        confirmButton = {
+            TextButton(onClick = onDismiss, modifier = Modifier.tvFocusBorder()) { Text("Close") }
+        },
     )
 }
 

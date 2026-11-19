@@ -49,13 +49,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.nativeKeyCode
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.relocation.BringIntoViewModifierNode
+import androidx.compose.ui.relocation.bringIntoView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
@@ -99,7 +104,7 @@ fun SettingsScreen(
             TopAppBar(
                 title = { Text("Settings") },
                 actions = {
-                    IconButton(onClick = onScan, enabled = !state.scanning) {
+                    IconButton(onClick = onScan, enabled = !state.scanning, modifier = Modifier.tvFocusBorder()) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Scan the network")
                     }
                 },
@@ -260,7 +265,7 @@ private fun DvrAddressField(address: String, onSave: (String) -> Unit) {
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = { save() }),
         )
-        Button(onClick = save, enabled = canSave, modifier = Modifier.align(Alignment.End)) {
+        Button(onClick = save, enabled = canSave, modifier = Modifier.align(Alignment.End).tvFocusBorder()) {
             Text("Save DVR address")
         }
     }
@@ -310,6 +315,7 @@ private fun PlaybackToggleRow(
     ) {
         Row(
             modifier = Modifier
+                .tvFocusBorder(MaterialTheme.shapes.medium)
                 .toggleable(value = checked, role = Role.Switch, onValueChange = onChecked)
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -458,6 +464,7 @@ private fun ChoiceRow(
         shape = MaterialTheme.shapes.medium,
         modifier = modifier
             .fillMaxWidth()
+            .tvFocusBorder(MaterialTheme.shapes.medium)
             .border(1.dp, if (selected) Amber else Color.Transparent, MaterialTheme.shapes.medium),
     ) {
         Row(
@@ -477,7 +484,7 @@ private fun ChoiceRow(
                 content()
             }
             if (onRemove != null) {
-                IconButton(onClick = onRemove) {
+                IconButton(onClick = onRemove, modifier = Modifier.tvFocusBorder()) {
                     Icon(Icons.Filled.Close, contentDescription = removeDescription)
                 }
             }
@@ -510,6 +517,8 @@ private fun SettingsTextField(
         value = value,
         onValueChange = onValueChange,
         modifier = modifier
+            .then(if (television) SettingsFieldScrollElement else Modifier)
+            .tvFocusBorder()
             .onFocusChanged { focus ->
                 if (!focus.isFocused && editing) {
                     editing = false
@@ -531,6 +540,23 @@ private fun SettingsTextField(
         keyboardOptions = keyboardOptions,
         keyboardActions = keyboardActions,
     )
+}
+
+private data object SettingsFieldScrollElement : ModifierNodeElement<SettingsFieldScrollNode>() {
+    override fun create() = SettingsFieldScrollNode()
+
+    override fun update(node: SettingsFieldScrollNode) = Unit
+}
+
+private class SettingsFieldScrollNode : Modifier.Node(), BringIntoViewModifierNode {
+    override suspend fun bringIntoView(
+        childCoordinates: LayoutCoordinates,
+        boundsProvider: () -> Rect?,
+    ) {
+        // TV scrolls to a pivot. Use the full field for both focus and caret requests
+        // so their different bounds do not move the list to two different positions.
+        bringIntoView()
+    }
 }
 
 /** Direction-pad OK and the remote's select button. Arrows keep moving through the list. */
@@ -585,7 +611,7 @@ private fun GuideDraftField(
                     }
                 }
                 if (draft.isNotEmpty()) {
-                    Button(onClick = onAdd) { Text("Add") }
+                    Button(onClick = onAdd, modifier = Modifier.tvFocusBorder()) { Text("Add") }
                 }
             }
         }
@@ -617,7 +643,7 @@ private fun TunerDraftField(
         Button(
             onClick = onAdd,
             enabled = state.manualHost.isNotBlank() && !state.connecting,
-            modifier = Modifier.align(Alignment.End),
+            modifier = Modifier.align(Alignment.End).tvFocusBorder(),
         ) {
             if (state.connecting) {
                 CircularProgressIndicator(

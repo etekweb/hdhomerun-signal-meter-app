@@ -262,7 +262,7 @@ class MainActivity : ComponentActivity() {
                                         onQuery = viewModel::setQuery,
                                         onFilter = viewModel::setFilter,
                                         onWatch = viewModel::watch,
-                                        onReturnHighlightFinished = viewModel::consumeLineupReturn,
+                                        onLineupReturnHandled = viewModel::consumeLineupReturn,
                                         onOpenTuners = viewModel::openTuners,
                                         onCloseTuners = viewModel::closeTuners,
                                         onRefreshTuners = viewModel::refreshTuners,

@@ -115,6 +115,7 @@ fun AppBottomBar(tab: AppTab, onTab: (AppTab) -> Unit) {
         NavigationBarItem(
             selected = tab == AppTab.Lineup,
             onClick = { onTab(AppTab.Lineup) },
+            modifier = Modifier.tvFocusBorder(),
             icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
             label = { Text("Lineup") },
             colors = colors,
@@ -122,6 +123,7 @@ fun AppBottomBar(tab: AppTab, onTab: (AppTab) -> Unit) {
         NavigationBarItem(
             selected = tab == AppTab.Dvr,
             onClick = { onTab(AppTab.Dvr) },
+            modifier = Modifier.tvFocusBorder(),
             icon = { Icon(painterResource(R.drawable.ic_nav_dvr), contentDescription = null) },
             label = { Text("DVR") },
             colors = colors,
@@ -129,6 +131,7 @@ fun AppBottomBar(tab: AppTab, onTab: (AppTab) -> Unit) {
         NavigationBarItem(
             selected = tab == AppTab.Settings,
             onClick = { onTab(AppTab.Settings) },
+            modifier = Modifier.tvFocusBorder(),
             icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
             label = { Text("Settings") },
             colors = colors,
@@ -161,6 +164,7 @@ private fun AppNavigationRail(tab: AppTab, onTab: (AppTab) -> Unit) {
             NavigationRailItem(
                 selected = tab == AppTab.Lineup,
                 onClick = { onTab(AppTab.Lineup) },
+                modifier = Modifier.tvFocusBorder(),
                 icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
                 label = { Text("Lineup") },
                 alwaysShowLabel = true,
@@ -169,6 +173,7 @@ private fun AppNavigationRail(tab: AppTab, onTab: (AppTab) -> Unit) {
             NavigationRailItem(
                 selected = tab == AppTab.Dvr,
                 onClick = { onTab(AppTab.Dvr) },
+                modifier = Modifier.tvFocusBorder(),
                 icon = { Icon(painterResource(R.drawable.ic_nav_dvr), contentDescription = null) },
                 label = { Text("DVR") },
                 alwaysShowLabel = true,
@@ -177,6 +182,7 @@ private fun AppNavigationRail(tab: AppTab, onTab: (AppTab) -> Unit) {
             NavigationRailItem(
                 selected = tab == AppTab.Settings,
                 onClick = { onTab(AppTab.Settings) },
+                modifier = Modifier.tvFocusBorder(),
                 icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
                 label = { Text("Settings") },
                 alwaysShowLabel = true,

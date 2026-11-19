@@ -165,7 +165,7 @@ private fun DvrBrowser(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             style = MaterialTheme.typography.labelLarge,
-                            modifier = Modifier.clickable(onClickLabel = "Show recording capacity") {
+                            modifier = Modifier.tvFocusBorder().clickable(onClickLabel = "Show recording capacity") {
                                 showStorage = true
                                 onRefresh()
                                 onRefreshScheduled()
@@ -175,6 +175,7 @@ private fun DvrBrowser(
                     IconButton(
                         onClick = if (scheduled) onRefreshScheduled else onRefresh,
                         enabled = !loading,
+                        modifier = Modifier.tvFocusBorder(),
                     ) {
                         Icon(
                             Icons.Filled.Refresh,
@@ -230,6 +231,7 @@ private fun DvrTab(label: String, selected: Boolean, onClick: () -> Unit) {
     Tab(
         selected = selected,
         onClick = onClick,
+        modifier = Modifier.tvFocusBorder(),
         selectedContentColor = Amber,
         unselectedContentColor = Muted,
         text = { Text(label) },
@@ -362,7 +364,7 @@ private fun RecordingRow(recording: Recording, nowMs: Long, onClick: () -> Unit)
         onClick = onClick,
         color = InkRaised,
         shape = MaterialTheme.shapes.medium,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().tvFocusBorder(MaterialTheme.shapes.medium),
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             Text(
@@ -425,7 +427,7 @@ private fun ScheduledRow(item: ScheduledRecording, nowMs: Long, onClick: () -> U
         onClick = onClick,
         color = InkRaised,
         shape = MaterialTheme.shapes.medium,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().tvFocusBorder(MaterialTheme.shapes.medium),
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             Text(
@@ -495,7 +497,7 @@ private fun RecordingDetail(
             TopAppBar(
                 title = { Text(recording.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
-                    IconButton(onClick = onClose, enabled = !acting) {
+                    IconButton(onClick = onClose, enabled = !acting, modifier = Modifier.tvFocusBorder()) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Paper)
                     }
                 },
@@ -569,7 +571,7 @@ private fun RecordingDetail(
             Button(
                 onClick = onDelete,
                 enabled = !acting,
-                modifier = Modifier.padding(top = 12.dp),
+                modifier = Modifier.padding(top = 12.dp).tvFocusBorder(),
                 colors = ButtonDefaults.buttonColors(containerColor = Bad, contentColor = Ink),
             ) {
                 Text("Delete")
@@ -590,13 +592,13 @@ private fun RecordingPlayActions(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (canResume) {
-            Button(onClick = onResume, enabled = enabled) {
+            Button(onClick = onResume, enabled = enabled, modifier = Modifier.tvFocusBorder()) {
                 Icon(Icons.Filled.PlayArrow, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text("Resume")
             }
         }
-        Button(onClick = onPlay, enabled = enabled) {
+        Button(onClick = onPlay, enabled = enabled, modifier = Modifier.tvFocusBorder()) {
             if (!canResume) {
                 Icon(Icons.Filled.PlayArrow, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
@@ -628,7 +630,7 @@ private fun ScheduledDetail(
             TopAppBar(
                 title = { Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
-                    IconButton(onClick = onClose, enabled = !acting) {
+                    IconButton(onClick = onClose, enabled = !acting, modifier = Modifier.tvFocusBorder()) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Paper)
                     }
                 },
@@ -689,10 +691,11 @@ private fun ScheduledDetail(
                 Modifier.padding(top = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Button(onClick = onEdit, enabled = !acting) { Text("Edit") }
+                Button(onClick = onEdit, enabled = !acting, modifier = Modifier.tvFocusBorder()) { Text("Edit") }
                 Button(
                     onClick = onDelete,
                     enabled = !acting,
+                    modifier = Modifier.tvFocusBorder(),
                     colors = ButtonDefaults.buttonColors(containerColor = Bad, contentColor = Ink),
                 ) {
                     Text("Delete")
@@ -735,11 +738,14 @@ private fun DeleteConfirmDialog(
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    TextButton(onClick = onDismiss, enabled = !acting) { Text("Cancel") }
+                    TextButton(onClick = onDismiss, enabled = !acting, modifier = Modifier.tvFocusBorder()) {
+                        Text("Cancel")
+                    }
                     Spacer(Modifier.width(8.dp))
                     Button(
                         onClick = onConfirm,
                         enabled = !acting,
+                        modifier = Modifier.tvFocusBorder(),
                         colors = ButtonDefaults.buttonColors(containerColor = Bad, contentColor = Ink),
                     ) {
                         if (acting) {
