@@ -63,6 +63,7 @@ import net.etekweb.hdhrmeter.ui.inPlayer
 import net.etekweb.hdhrmeter.ui.isTelevision
 import net.etekweb.hdhrmeter.ui.isTelevisionUi
 import net.etekweb.hdhrmeter.ui.remoteChannelStep
+import net.etekweb.hdhrmeter.ui.remoteSkipDelta
 import net.etekweb.hdhrmeter.ui.televisionBackHidesPlayerOverlay
 import net.etekweb.hdhrmeter.ui.televisionRemoteRevealsOverlay
 import net.etekweb.hdhrmeter.ui.SettingsScreen
@@ -344,6 +345,13 @@ class MainActivity : ComponentActivity() {
         val state = viewModel.ui.value
         val television = isTelevisionUi(resources.configuration.uiMode)
         val chromeVisible = !inPip && !enteringPip
+        val skipDelta = remoteSkipDelta(event.keyCode)
+        if (television && chromeVisible && state.screen.inPlayer && skipDelta != null) {
+            if (state.schedule.pending == null && event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                viewModel.skipPlayback(skipDelta)
+            }
+            return true
+        }
         val channelStep = remoteChannelStep(event.keyCode)
         if (television && chromeVisible && channelStep != null && state.schedule.pending == null) {
             val pressed = event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0

@@ -32,6 +32,7 @@ import net.etekweb.hdhrmeter.ui.MeterViewModel
 import net.etekweb.hdhrmeter.ui.PlaybackPhase
 import net.etekweb.hdhrmeter.ui.Screen
 import net.etekweb.hdhrmeter.ui.UiState
+import net.etekweb.hdhrmeter.ui.isTelevisionUi
 
 class PlaybackService : Service() {
     private val store = ViewModelStore()
@@ -81,6 +82,8 @@ class PlaybackService : Service() {
                 override fun onPlay() = model.setPlaybackPlaying(true)
                 override fun onPause() = model.setPlaybackPlaying(false)
                 override fun onStop() = model.onBack()
+                override fun onRewind() = skipFromRemote(-SKIP_STEP_MS)
+                override fun onFastForward() = skipFromRemote(SKIP_STEP_MS)
                 override fun onCustomAction(action: String, extras: Bundle?) {
                     if (action == ACTION_STOP) onStop()
                 }
@@ -104,6 +107,12 @@ class PlaybackService : Service() {
     }
 
     override fun onBind(intent: Intent): Binder = Connection()
+
+    private fun skipFromRemote(deltaMs: Long) {
+        if (isTelevisionUi(resources.configuration.uiMode) && model.ui.value.schedule.pending == null) {
+            model.skipPlayback(deltaMs)
+        }
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -148,9 +157,11 @@ class PlaybackService : Service() {
         else (clock.positionMs - clock.bufferStartMs).coerceIn(0L, media.durationMs)
         val playing = media.state == PlaybackState.STATE_PLAYING
         val speed = if (playing && state.phase == PlaybackPhase.Ready) 1f else 0f
+        val canSkip = media.controlsReady && clock.timeshift && isTelevisionUi(resources.configuration.uiMode)
         val actions = PlaybackState.ACTION_STOP or
             (if (media.controlsReady) PlaybackState.ACTION_PLAY_PAUSE or PlaybackState.ACTION_PLAY or
                 PlaybackState.ACTION_PAUSE else 0L) or
+            (if (canSkip) PlaybackState.ACTION_REWIND or PlaybackState.ACTION_FAST_FORWARD else 0L) or
             (if (media.durationMs != null) PlaybackState.ACTION_SEEK_TO else 0L)
         session.setPlaybackState(
             PlaybackState.Builder()

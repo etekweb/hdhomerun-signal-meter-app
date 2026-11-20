@@ -9,6 +9,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalConfiguration
 import net.etekweb.hdhrmeter.data.ChannelStretch
+import net.etekweb.hdhrmeter.player.SKIP_STEP_MS
 
 /** Playback buttons in left-to-right order. Pause is where the remote lands. */
 internal enum class TransportStop { Start, Rewind, Pause, Forward, Live }
@@ -52,6 +53,12 @@ internal fun isTelevisionUi(uiMode: Int): Boolean {
 internal fun remoteChannelStep(keyCode: Int): Int? = when (keyCode) {
     KeyEvent.KEYCODE_CHANNEL_UP -> 1
     KeyEvent.KEYCODE_CHANNEL_DOWN -> -1
+    else -> null
+}
+
+internal fun remoteSkipDelta(keyCode: Int): Long? = when (keyCode) {
+    KeyEvent.KEYCODE_MEDIA_REWIND -> -SKIP_STEP_MS
+    KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> SKIP_STEP_MS
     else -> null
 }
 

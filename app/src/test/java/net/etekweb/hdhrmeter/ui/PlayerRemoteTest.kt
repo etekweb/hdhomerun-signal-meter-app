@@ -67,6 +67,15 @@ class PlayerRemoteTest {
     }
 
     @Test
+    fun mediaSeekKeysSkipTenSecondsWithoutRevealingTheControls() {
+        assertEquals(-10_000L, remoteSkipDelta(KeyEvent.KEYCODE_MEDIA_REWIND))
+        assertEquals(10_000L, remoteSkipDelta(KeyEvent.KEYCODE_MEDIA_FAST_FORWARD))
+        assertNull(remoteSkipDelta(KeyEvent.KEYCODE_MEDIA_NEXT))
+        assertFalse(isPlayerRevealKeyCode(KeyEvent.KEYCODE_MEDIA_REWIND))
+        assertFalse(isPlayerRevealKeyCode(KeyEvent.KEYCODE_MEDIA_FAST_FORWARD))
+    }
+
+    @Test
     fun revealIgnoresPhonesVisibleChromeAndOtherKeys() {
         assertFalse(
             televisionRemoteRevealsOverlay(
