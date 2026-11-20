@@ -5,6 +5,7 @@ import org.json.JSONObject
 import java.net.URI
 import java.text.DecimalFormatSymbols
 import java.util.Locale
+import kotlin.math.roundToLong
 
 /**
  * One finished or in-progress file on an HDHomeRun record engine.
@@ -402,8 +403,7 @@ internal fun recordingResumeWall(recording: Recording, span: RecordingSpan): Lon
     if (!span.seekable || !recordingCanResume(recording)) return null
     val seconds = recordingResumeOffset(recording.resumeSec) ?: return null
     val wall = span.startMs + seconds * 1_000L
-    if (wall <= span.startMs || (!recording.stillRecording && wall >= span.endMs)) return null
-    return wall.coerceAtMost(span.endMs)
+    return wall.takeIf { it in (span.startMs + 1L) until span.endMs }
 }
 
 /**
@@ -456,6 +456,12 @@ internal data class RecordingSpan(
         if (into >= span) return totalBytes - 1L
         val byte = (into.toDouble() / span.toDouble() * totalBytes.toDouble()).toLong()
         return byte.coerceIn(0L, totalBytes - 1L)
+    }
+
+    fun wallAt(byteOffset: Long): Long {
+        if (!seekable) return startMs
+        val fraction = (byteOffset.toDouble() / totalBytes.toDouble()).coerceIn(0.0, 1.0)
+        return startMs + ((endMs - startMs) * fraction).roundToLong()
     }
 }
 

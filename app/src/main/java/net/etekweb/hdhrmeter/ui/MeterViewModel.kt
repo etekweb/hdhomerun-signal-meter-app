@@ -425,10 +425,11 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 val screen = _ui.value.screen
                 if (screen is Screen.PlayRecording) {
                     if (error.ended) return@collect
+                    val message = recordingPlay.failure?.message ?: error.message
                     stopPlayback()
                     _ui.update {
                         it.copy(
-                            playbackError = error.message,
+                            playbackError = message,
                             offerTranscode = false,
                             phase = PlaybackPhase.Idle,
                         )
@@ -2575,10 +2576,11 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             val span = recordingSpan(recording, probed.sampledAtMs, if (probed.range == null) 0L else probed.totalBytes)
+            val resumeAt = if (start == RecordingStart.Resume) recordingResumeWall(recording, span) else null
             val startWall = when (start) {
                 RecordingStart.Beginning -> span.startMs
                 RecordingStart.Live -> span.endMs
-                RecordingStart.Resume -> recordingResumeWall(recording, span) ?: span.startMs
+                RecordingStart.Resume -> resumeAt ?: span.startMs
             }
             val needsSeek = start == RecordingStart.Live ||
                 (start == RecordingStart.Resume && recordingCanResume(recording))
@@ -2586,8 +2588,13 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 showStreamFailure(StreamFailure("The DVR did not provide a seekable recording. Try Start from Beginning.", null))
                 return@launch
             }
+            if (recording.stillRecording && start == RecordingStart.Resume && needsSeek && resumeAt == null) {
+                showStreamFailure(StreamFailure("The saved position is outside the available recording.", null))
+                return@launch
+            }
             val position = recordingPlay.begin(
                 url, span, probed.range, startWall, recording.stillRecording, recording.recordEndEpochMs,
+                resume = resumeAt != null,
             )
             showClock = true
             _ui.update {
@@ -2610,6 +2617,10 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun publishRecordingClock() {
         if (!showClock || _ui.value.screen !is Screen.PlayRecording || !recordingPlay.active) return
+        recordingPlay.failure?.let {
+            showStreamFailure(it)
+            return
+        }
         val now = System.currentTimeMillis()
         val media = engine.transport.value
         val sample = recordingPlay.sample(media.mediaTimeMs, now, media.playing)

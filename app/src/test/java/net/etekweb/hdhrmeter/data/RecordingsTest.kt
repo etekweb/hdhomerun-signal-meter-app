@@ -142,7 +142,7 @@ class RecordingsTest {
         assertTrue(recordingCanResume(recording))
         val span = recordingSpan(recording, nowMs, 100_000L)
         assertEquals(span.startMs + 90_000L, recordingResumeWall(recording, span))
-        assertEquals(span.endMs, recordingResumeWall(recording.copy(resumeSec = 105L), span))
+        assertNull(recordingResumeWall(recording.copy(resumeSec = 105L), span))
     }
 
     @Test

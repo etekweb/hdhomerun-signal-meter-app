@@ -122,12 +122,12 @@ class TimeshiftTest {
     }
 
     @Test(timeout = 15_000)
-    fun growingRecordingCanFindTheLiveByteWithoutAKnownLength() {
+    fun growingRecordingPrefersThePlayableEdgeOverTheAdvertisedLength() {
         ServerSocket(0, 4, InetAddress.getByName("127.0.0.1")).use { server ->
             server.soTimeout = 4_000
             val requests = mutableListOf<String>()
             val worker = Thread {
-                for (range in listOf("bytes 0-", "bytes 9000-")) {
+                for (range in listOf("bytes 0-89999999/90000000", "bytes 9000-")) {
                     server.accept().use { client ->
                         client.soTimeout = 3_000
                         requests += readUntilHeaders(client)

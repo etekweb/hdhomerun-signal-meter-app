@@ -72,7 +72,8 @@ class TimeshiftRelay : Closeable {
         requestedWallMs: Long,
         followRecording: Boolean = false,
         recordEndMs: Long? = null,
-    ): Int = armStream(url, range, joinLive, requestedWallMs, followRecording, recordEndMs)
+        resumeBytes: LongRange? = null,
+    ): Int = armStream(url, range, joinLive, requestedWallMs, followRecording, recordEndMs, resumeBytes)
 
     fun armDirect(url: String): String {
         val gen = armStream(url, range = null, joinLive = false, requestedWallMs = 0L)
@@ -86,10 +87,11 @@ class TimeshiftRelay : Closeable {
         requestedWallMs: Long,
         followRecording: Boolean = false,
         recordEndMs: Long? = null,
+        resumeBytes: LongRange? = null,
     ): Int =
         synchronized(lock) {
             val gen = generation.incrementAndGet()
-            armed = Armed(url, range, joinLive, requestedWallMs, gen, followRecording, recordEndMs)
+            armed = Armed(url, range, joinLive, requestedWallMs, gen, followRecording, recordEndMs, resumeBytes)
             _snapshot.value = RelaySnapshot(generation = gen)
             closeActive()
             gen
@@ -161,7 +163,14 @@ class TimeshiftRelay : Closeable {
                 writeEmpty(client, 502)
                 return
             }
-            val start = contentRangeStart(upstream.headers["content-range"])
+            val reportedStart = contentRangeStart(upstream.headers["content-range"])
+            val resumeBytes = request.resumeBytes
+            if (resumeBytes != null && (reportedStart == null || reportedStart !in resumeBytes)) {
+                publishFailure(request, StreamFailure("The DVR could not open the saved position.", null))
+                writeEmpty(client, 502)
+                return
+            }
+            val start = reportedStart
                 ?: contentRangeStart(request.range?.replace("=", " "))?.takeIf { it < TIMESHIFT_LIVE_BYTE }
                 ?: 0L
             val opened = RelaySnapshot(
@@ -283,7 +292,7 @@ class TimeshiftRelay : Closeable {
     }
 
     private fun publishFailure(request: Armed, failure: StreamFailure) {
-        if (request.range != null) return
+        if (request.range != null && request.resumeBytes == null) return
         _snapshot.update { current ->
             if (current.generation == request.generation) current.copy(failure = failure) else current
         }
@@ -350,6 +359,7 @@ class TimeshiftRelay : Closeable {
         val generation: Int,
         val followRecording: Boolean,
         val recordEndMs: Long?,
+        val resumeBytes: LongRange?,
     )
 
     private companion object {

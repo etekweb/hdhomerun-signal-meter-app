@@ -1,5 +1,6 @@
 package net.etekweb.hdhrmeter.player
 
+import net.etekweb.hdhrmeter.data.RecordingSpan
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -53,6 +54,48 @@ class TimeshiftRelayTest {
             relay.close()
             upstream.close()
             server.join(2_000)
+        }
+    }
+
+    @Test(timeout = 15_000)
+    fun recordingResumeUsesTheConfirmedOffsetAndRejectsALiveClamp() {
+        ServerSocket(0, 4, InetAddress.getByName("127.0.0.1")).use { upstream ->
+            upstream.soTimeout = 4_000
+            val worker = Executors.newSingleThreadExecutor()
+            try {
+                val requests = worker.submit<List<String>> {
+                    listOf(
+                        "206 Partial Content\r\nContent-Range: bytes 2900-2903/10000\r\nContent-Length: 4\r\n\r\nPAST",
+                        "416 Range Not Satisfiable\r\nContent-Range: bytes */10000\r\nContent-Length: 0\r\n\r\n",
+                        "206 Partial Content\r\nContent-Range: bytes 9996-9999/10000\r\nContent-Length: 4\r\n\r\nLIVE",
+                    ).map { response ->
+                        upstream.accept().use { client ->
+                            client.soTimeout = 3_000
+                            val request = readUntilHeaders(client)
+                            client.getOutputStream().write("HTTP/1.1 $response".toByteArray(Charsets.US_ASCII))
+                            request.lineSequence().first { it.startsWith("Range:") }
+                        }
+                    }
+                }
+                RecordingPlay().use { player ->
+                    val url = "http://127.0.0.1:${upstream.localPort}/recorded/play"
+                    val span = RecordingSpan(100_000L, 200_000L, 10_000L, bounded = true)
+                    player.begin(url, span, "bytes=0-", 130_000L, growing = true, recordEndMs = 200_000L, resume = true)
+                    assertTrue(httpGet(player.localUrl).endsWith("PAST"))
+                    assertEquals(129_000L, player.sample(0L, 200_000L, advancing = true).positionMs)
+
+                    player.begin(url, span, "bytes=0-", 130_000L, growing = true, recordEndMs = 200_000L, resume = true)
+                    assertTrue(httpGet(player.localUrl).startsWith("HTTP/1.0 502"))
+                    assertEquals("The DVR could not open the saved position.", player.failure?.message)
+                    assertTrue(!player.hasPlayed)
+                    assertEquals(
+                        listOf("Range: bytes=3000-", "Range: bytes=2904-", "Range: bytes=3000-"),
+                        requests.get(4, TimeUnit.SECONDS),
+                    )
+                }
+            } finally {
+                worker.shutdownNow()
+            }
         }
     }
 

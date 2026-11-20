@@ -88,10 +88,14 @@ internal fun probeRecording(url: String, growing: Boolean = false): RecordingPro
     val ranged = openRecordingProbe(url, "bytes=0-")
     if (ranged.failure == null) {
         if (!growing) return ranged.copy(range = "bytes=0-")
-        if (ranged.totalBytes > 1L && ranged.range != null) return ranged
-        // A growing stream can omit a total. Ask for the edge as with DVR timeshift.
+        // An open recording can advertise a streaming length larger than its playable data.
+        // Prefer the byte where the engine clamps an out-of-range request.
         val edge = openRecordingProbe(url, "bytes=$TIMESHIFT_LIVE_BYTE-", edge = true)
-        return if (edge.totalBytes > 1L) edge.copy(range = "bytes=0-") else ranged
+        return if (edge.totalBytes in 2L until TIMESHIFT_LIVE_BYTE) {
+            edge.copy(range = "bytes=0-")
+        } else {
+            ranged.copy(totalBytes = ranged.totalBytes.takeIf { it < TIMESHIFT_LIVE_BYTE } ?: 0L)
+        }
     }
     if (ranged.failure.hdhrCode != null) return ranged
     return openRecordingProbe(url, null)

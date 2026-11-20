@@ -21,6 +21,7 @@ internal class RecordingPlay : Closeable {
     private var hold = false
     private var holdGeneration = -1
     private var holdWall = 0L
+    private var openedWall = 0L
     private val picture = PictureClock(monotonic = true)
     private var growing = false
     private var recordEndMs: Long? = null
@@ -32,6 +33,7 @@ internal class RecordingPlay : Closeable {
     val active: Boolean get() = upstream != null
     val seekable: Boolean get() = active && span.seekable
     val startMs: Long get() = span.startMs
+    val failure get() = relay.snapshot.value.failure
 
     fun begin(
         url: String,
@@ -40,6 +42,7 @@ internal class RecordingPlay : Closeable {
         startWallMs: Long,
         growing: Boolean,
         recordEndMs: Long?,
+        resume: Boolean = false,
     ): Long {
         upstream = url
         span = window
@@ -48,10 +51,15 @@ internal class RecordingPlay : Closeable {
         finishedEdgeMs = null
         hasPlayed = false
         val wall = if (window.seekable) clampSeek(startWallMs) else window.startMs
-        return open(url, wall, if (wall > window.startMs) "bytes=${window.byteAt(wall)}-" else range.orEmpty())
+        return open(
+            url, wall, if (wall > window.startMs) "bytes=${window.byteAt(wall)}-" else range.orEmpty(),
+            resume = resume && window.seekable,
+        )
     }
 
-    private fun open(url: String, wall: Long, range: String): Long {
+    private fun open(url: String, wall: Long, range: String, resume: Boolean = false): Long {
+        // Allow packet/keyframe alignment while rejecting a jump to a different part of the file.
+        val resumeBytes = if (resume) span.byteAt(wall - 3_000L)..span.byteAt(wall + 3_000L) else null
         val generation = relay.arm(
             url,
             range,
@@ -59,6 +67,7 @@ internal class RecordingPlay : Closeable {
             requestedWallMs = wall,
             followRecording = growing && finishedEdgeMs == null && range.isNotEmpty(),
             recordEndMs = recordEndMs,
+            resumeBytes = resumeBytes,
         )
         hold = true
         holdGeneration = generation
@@ -93,12 +102,11 @@ internal class RecordingPlay : Closeable {
             hold = false
             hasPlayed = true
             picture.start(nowMs, media, adoptMedia = fresh)
-            val origin = if (snap.opened) snap.requestedWallMs else holdWall
-            return placed(origin + picture.elapsedMs, nowMs)
+            openedWall = if (snap.startByte == span.byteAt(holdWall)) holdWall else span.wallAt(snap.startByte)
+            return placed(openedWall + picture.elapsedMs, nowMs)
         }
         val elapsed = picture.advance(nowMs, media, advancing)
-        val origin = if (snap.opened) snap.requestedWallMs else span.startMs
-        return placed(origin + elapsed, nowMs)
+        return placed(openedWall + elapsed, nowMs)
     }
 
     /** Lands on [wallMs]. Returns the clamped clock time, or null when this file cannot be seeked. */
