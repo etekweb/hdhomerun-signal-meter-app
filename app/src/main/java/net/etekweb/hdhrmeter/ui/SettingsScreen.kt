@@ -239,6 +239,10 @@ fun SettingsScreen(
                         onChecked = onShowChannelNumber,
                     )
                 }
+                item {
+                    HorizontalDivider(color = InkRaised, modifier = Modifier.padding(vertical = 6.dp))
+                    AppUpdateSection()
+                }
             }
         }
     }

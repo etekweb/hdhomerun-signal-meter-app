@@ -50,6 +50,36 @@ gradlew.bat test
 
 The debug APK is `app/build/outputs/apk/debug/app-debug.apk`.
 
+## Publish a GitHub release
+
+In the repository's **Settings → Secrets and variables → Actions → New repository secret**, add these four secrets from the signing setup above. Use the same keystore and alias as the APKs already installed on your devices so Android can update them in place.
+
+| Secret | Value |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | Base64 of the entire existing keystore file |
+| `ANDROID_KEY_ALIAS` | Existing key alias, normally `key0` |
+| `ANDROID_KEYSTORE_PASSWORD` | Keystore password |
+| `ANDROID_KEY_PASSWORD` | Password for the signing key |
+
+For the default keystore path, copy its Base64 to the clipboard in PowerShell, then paste it into the first secret:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("$env:USERPROFILE/.gradle/AndroidAppKeystore")) | Set-Clipboard
+```
+
+Use the actual path if `signing.storeFile` points elsewhere. Enter the original passwords as the secret values, without the escaping used in `local.properties`.
+
+Once the workflow is on GitHub, tag the commit you want to release and push the tag:
+
+```powershell
+git tag 1.1.0
+git push origin 1.1.0
+```
+
+Use increasing numeric versions such as `1.1` or `1.1.0`, with an optional lowercase `v`. Those two forms represent the same Android version, so use only one per release. Major versions range from 1 to 2099, and minor and patch numbers range from 0 to 999. Wait for each release to publish before pushing the next version. The action runs the unit tests, builds a signed APK with the tag's version, and publishes it as the latest GitHub Release. To build locally with the same version as a tag, run `gradlew.bat assembleDebug -PreleaseVersion=1.1.0`.
+
+Install a build with the updater once from the [GitHub Releases page](https://github.com/etekweb/hdhomerun-signal-meter-app/releases). For later releases, open **Settings → App updates → Check for updates** and select **Download and install**. Android may first ask you to allow this app to install packages, then asks you to confirm the update.
+
 ## Limits
 
 - The stream is the original broadcast. Many ATSC channels are MPEG-2 video and AC-3 audio. Playback uses LibVLC, which decodes MPEG-2 in software. Phones such as the Pixel 9 have no MediaCodec MPEG-2 decoder, and an HDHomeRun FLEX cannot transcode.

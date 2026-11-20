@@ -10,6 +10,22 @@ val localProperties = Properties().apply {
     rootProject.file("local.properties").takeIf { it.isFile }?.inputStream()?.use { load(it) }
 }
 
+fun signingValue(environment: String, property: String): String? =
+    providers.environmentVariable(environment).orNull ?: localProperties.getProperty(property)
+
+val releaseVersion = providers.gradleProperty("releaseVersion").orNull?.removePrefix("v")
+val releaseVersionCode = releaseVersion?.let { version ->
+    val match = Regex("(0|[1-9][0-9]{0,3})\\.(0|[1-9][0-9]{0,2})(?:\\.(0|[1-9][0-9]{0,2}))?")
+        .matchEntire(version)
+    require(match != null) { "Use a version tag such as 1.1 or v1.1.0 for releaseVersion." }
+    val (major, minor, patch) = match.destructured
+    require(major.toInt() <= 2099) { "The major version must be at most 2099." }
+    // Reserve code 1 for existing local builds, then order releases numerically by version.
+    val code = major.toInt() * 1_000_000 + minor.toInt() * 1_000 + (patch.toIntOrNull() ?: 0) + 1
+    require(code >= 1_000_001) { "The release version must be at least 1.0." }
+    code
+}
+
 android {
     namespace = "net.etekweb.hdhrmeter"
     compileSdk = 37
@@ -18,20 +34,20 @@ android {
         applicationId = "net.etekweb.hdhrmeter"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = releaseVersionCode ?: 1
+        versionName = releaseVersion ?: "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
         create("production") {
             storeFile = rootProject.file(
-                localProperties.getProperty("signing.storeFile")
+                signingValue("ANDROID_KEYSTORE_PATH", "signing.storeFile")
                     ?: "${System.getProperty("user.home")}/.gradle/AndroidAppKeystore",
             )
-            keyAlias = localProperties.getProperty("signing.keyAlias", "key0")
-            storePassword = localProperties.getProperty("signing.storePassword")
-            keyPassword = localProperties.getProperty("signing.keyPassword")
+            keyAlias = signingValue("ANDROID_KEY_ALIAS", "signing.keyAlias") ?: "key0"
+            storePassword = signingValue("ANDROID_KEYSTORE_PASSWORD", "signing.storePassword")
+            keyPassword = signingValue("ANDROID_KEY_PASSWORD", "signing.keyPassword")
         }
     }
 
