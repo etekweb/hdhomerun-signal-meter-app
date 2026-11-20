@@ -21,46 +21,65 @@ internal class RecordingPlay : Closeable {
     private var hold = false
     private var holdGeneration = -1
     private var holdWall = 0L
-    private val picture = PictureClock()
+    private val picture = PictureClock(monotonic = true)
+    private var growing = false
+    private var recordEndMs: Long? = null
+    private var finishedEdgeMs: Long? = null
+    var hasPlayed: Boolean = false
+        private set
 
     val localUrl: String get() = relay.localUrl
     val active: Boolean get() = upstream != null
     val seekable: Boolean get() = active && span.seekable
     val startMs: Long get() = span.startMs
 
-    /**
-     * Opens [url] at [startWallMs].
-     * A finished file with a later wall opens on the matching byte. Anything else starts at the beginning.
-     */
-    fun begin(url: String, window: RecordingSpan, range: String?, startWallMs: Long = window.startMs) {
+    fun begin(
+        url: String,
+        window: RecordingSpan,
+        range: String?,
+        startWallMs: Long,
+        growing: Boolean,
+        recordEndMs: Long?,
+    ): Long {
         upstream = url
         span = window
-        val wall = if (window.seekable) startWallMs.coerceIn(window.startMs, window.endMs) else window.startMs
-        val openRange = if (window.seekable && wall > window.startMs) {
-            "bytes=${window.byteAt(wall)}-"
-        } else {
-            range?.takeIf { it.isNotBlank() }.orEmpty()
-        }
+        this.growing = growing
+        this.recordEndMs = recordEndMs
+        finishedEdgeMs = null
+        hasPlayed = false
+        val wall = if (window.seekable) clampSeek(startWallMs) else window.startMs
+        return open(url, wall, if (wall > window.startMs) "bytes=${window.byteAt(wall)}-" else range.orEmpty())
+    }
+
+    private fun open(url: String, wall: Long, range: String): Long {
         val generation = relay.arm(
             url,
-            openRange,
+            range,
             joinLive = false,
             requestedWallMs = wall,
+            followRecording = growing && finishedEdgeMs == null && range.isNotEmpty(),
+            recordEndMs = recordEndMs,
         )
         hold = true
         holdGeneration = generation
         holdWall = wall
+        return wall
     }
 
     fun stop() {
         upstream = null
         hold = false
+        hasPlayed = false
         relay.stopForwarding()
     }
 
     override fun close() {
         stop()
         relay.close()
+    }
+
+    fun finish(nowMs: Long) {
+        if (growing && finishedEdgeMs == null) finishedEdgeMs = edgeAt(nowMs)
     }
 
     fun sample(mediaTimeMs: Long, nowMs: Long, advancing: Boolean): RecordingSample {
@@ -70,37 +89,50 @@ internal class RecordingPlay : Closeable {
             val openedThis = snap.opened && snap.generation == holdGeneration
             val fresh = media in 0L..FRESH_MEDIA_MS
             val timedOut = openedThis && snap.openedAtMs > 0L && nowMs >= snap.openedAtMs + STREAM_HOLD_MS
-            if (!(openedThis && (fresh || timedOut))) return placed(holdWall)
+            if (!(openedThis && advancing && (fresh || timedOut))) return placed(holdWall, nowMs)
             hold = false
+            hasPlayed = true
             picture.start(nowMs, media, adoptMedia = fresh)
             val origin = if (snap.opened) snap.requestedWallMs else holdWall
-            return placed(origin + picture.elapsedMs)
+            return placed(origin + picture.elapsedMs, nowMs)
         }
         val elapsed = picture.advance(nowMs, media, advancing)
         val origin = if (snap.opened) snap.requestedWallMs else span.startMs
-        return placed(origin + elapsed)
+        return placed(origin + elapsed, nowMs)
     }
 
     /** Lands on [wallMs]. Returns the clamped clock time, or null when this file cannot be seeked. */
-    fun seek(wallMs: Long): Long? {
+    fun seek(wallMs: Long, refreshedSpan: RecordingSpan? = null): Long? {
         val url = upstream ?: return null
+        if (refreshedSpan?.seekable == true) {
+            span = finishedEdgeMs?.let { refreshedSpan.copy(endMs = it) } ?: refreshedSpan
+        }
         if (!span.seekable) return null
-        val wall = wallMs.coerceIn(span.startMs, span.endMs)
-        val generation = relay.arm(url, "bytes=${span.byteAt(wall)}-", joinLive = false, requestedWallMs = wall)
-        hold = true
-        holdGeneration = generation
-        holdWall = wall
-        return wall
+        val wall = clampSeek(wallMs)
+        return open(url, wall, "bytes=${span.byteAt(wall)}-")
     }
 
-    private fun placed(wallMs: Long): RecordingSample {
+    private fun clampSeek(wallMs: Long): Long {
+        // The newest bytes may be an incomplete MPEG-TS packet or lack a keyframe.
+        val end = if (growing && finishedEdgeMs == null) maxOf(span.startMs, span.endMs - 2_000L) else span.endMs
+        return wallMs.coerceIn(span.startMs, end)
+    }
+
+    private fun placed(wallMs: Long, nowMs: Long): RecordingSample {
         val start = span.startMs
+        val edge = edgeAt(nowMs)
         val position = if (span.bounded) {
-            wallMs.coerceIn(start, span.endMs)
+            wallMs.coerceIn(start, edge)
         } else {
             wallMs.coerceAtLeast(start)
         }
-        val end = if (span.bounded) span.endMs else maxOf(position, start + 1L)
+        val end = if (span.bounded) edge else maxOf(position, start + 1L)
         return RecordingSample(start, position, end)
+    }
+
+    private fun edgeAt(nowMs: Long): Long = finishedEdgeMs ?: if (growing) {
+        maxOf(span.endMs, minOf(nowMs, recordEndMs ?: nowMs))
+    } else {
+        span.endMs
     }
 }

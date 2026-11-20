@@ -411,7 +411,7 @@ private fun SignalOverlay(
                     ChannelHeader(number, name, onBack, television = tv != null)
                     Spacer(Modifier.weight(1f))
                     NoticeBlock(state, onTranscode, onResume, Modifier.padding(horizontal = 12.dp))
-                    Transport(state, program, tv, onStep, onTogglePlay, onJumpStart, onJumpLive, onSeek, onSkip)
+                    Transport(state, infoProgram, tv, onStep, onTogglePlay, onJumpStart, onJumpLive, onSeek, onSkip)
                 }
                 OverlayPanel(
                     channel = channel,
@@ -471,7 +471,7 @@ private fun SignalOverlay(
                             onResume,
                             Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         )
-                        Transport(state, program, tv, onStep, onTogglePlay, onJumpStart, onJumpLive, onSeek, onSkip)
+                        Transport(state, infoProgram, tv, onStep, onTogglePlay, onJumpStart, onJumpLive, onSeek, onSkip)
                     }
                 }
             }
@@ -1243,14 +1243,23 @@ private fun Transport(
     val enabledStops = enabledTransportStopsFor(state)
     val controls = enabledStops.isNotEmpty()
     val entryTab = overlayTabsFor(file).first()
+    val recordingStop = program?.stopEpochMs.takeIf { clock.recordingLive }
     val endLabel = when {
+        clock.recordingLive -> formatClockTime(maxOf(recordingStop ?: clock.liveMs, clock.liveMs))
         file && clock.timeshift -> formatClockTime(clock.liveMs)
         file -> ""
         else -> program?.stopEpochMs?.let { formatClockTime(it) } ?: "Live"
     }
     Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
         if (controls) {
-            PlaybackBar(clock, program, onSeek, endLabel = endLabel, markLive = !file)
+            PlaybackBar(
+                clock,
+                program = program.takeIf { !file },
+                onSeek = onSeek,
+                endLabel = endLabel,
+                markLive = !file || clock.recordingLive,
+                recordingStopMs = recordingStop,
+            )
             if (tv != null) {
                 LaunchedEffect(Unit) { tv.pause.requestFocus() }
             }
@@ -1361,13 +1370,14 @@ private fun PlaybackBar(
     onSeek: (Long) -> Unit,
     endLabel: String,
     markLive: Boolean,
+    recordingStopMs: Long?,
 ) {
     val bar = playbackBar(
         bufferStartMs = clock.bufferStartMs,
         positionMs = clock.positionMs,
         liveMs = clock.liveMs,
         programStartMs = program?.startEpochMs,
-        programStopMs = program?.stopEpochMs,
+        programStopMs = program?.stopEpochMs ?: recordingStopMs,
         seekable = clock.timeshift,
     )
     var dragFraction by remember { mutableStateOf<Float?>(null) }

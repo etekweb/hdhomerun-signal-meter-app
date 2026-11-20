@@ -89,7 +89,7 @@ private const val MAX_STEP_BYTES = 2_000_000L
  * never comes back through zero after a seek. While the picture is advancing,
  * a stuck media clock is replaced with time actually spent playing.
  */
-internal class PictureClock {
+internal class PictureClock(private val monotonic: Boolean = false) {
     var elapsedMs: Long = 0L
         private set
 
@@ -112,7 +112,7 @@ internal class PictureClock {
     fun start(nowMs: Long, mediaTimeMs: Long, adoptMedia: Boolean) {
         val media = mediaTimeMs.coerceAtLeast(0L)
         started = true
-        followAbsolute = adoptMedia
+        followAbsolute = adoptMedia && !monotonic
         originMedia = if (adoptMedia) 0L else media
         lastWall = nowMs
         lastMedia = media
@@ -134,7 +134,7 @@ internal class PictureClock {
             elapsedMs += dMedia
         } else if (dMedia <= -500L) {
             originMedia = media
-            followAbsolute = media <= FRESH_MEDIA_MS
+            followAbsolute = !monotonic && media <= FRESH_MEDIA_MS
             if (followAbsolute) elapsedMs = media
         } else {
             elapsedMs += dWall

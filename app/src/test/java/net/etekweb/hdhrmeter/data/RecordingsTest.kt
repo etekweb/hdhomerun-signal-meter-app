@@ -133,13 +133,16 @@ class RecordingsTest {
     }
 
     @Test
-    fun aGrowingFileDoesNotOfferResume() {
+    fun aGrowingFileOffersResumeAtItsSavedOffset() {
         val body = """
             [{"Title":"News","PlayURL":"http://dvr.local/rec","RecordStartTime":1799999900,"RecordEndTime":1800000100,"Resume":90}]
         """.trimIndent()
         val recording = parseRecordingIndex(body, nowMs, null).recordings.single()
         assertTrue(recording.stillRecording)
-        assertFalse(recordingCanResume(recording))
+        assertTrue(recordingCanResume(recording))
+        val span = recordingSpan(recording, nowMs, 100_000L)
+        assertEquals(span.startMs + 90_000L, recordingResumeWall(recording, span))
+        assertEquals(span.endMs, recordingResumeWall(recording.copy(resumeSec = 105L), span))
     }
 
     @Test
@@ -175,11 +178,10 @@ class RecordingsTest {
         val span = recordingSpan(finished, nowMs, 3_600_000L)
         assertEquals(span.startMs + 1_800_000L, recordingResumeWall(finished, span))
         assertNull(recordingResumeWall(finished.copy(resumeSec = null), span))
-        assertNull(recordingResumeWall(finished.copy(stillRecording = true), span))
     }
 
     @Test
-    fun spanUsesTheFinishedFileAndRefusesAGrowingOne() {
+    fun growingSpanUsesOnlyTheTimeAndBytesCurrentlyAvailable() {
         val finished = Recording(
             id = "1",
             title = "News",
@@ -204,7 +206,11 @@ class RecordingsTest {
         assertEquals(1_800_000L, span.byteAt(span.startMs + 1_800_000L))
         assertEquals(3_599_999L, span.byteAt(span.endMs))
         val growing = finished.copy(stillRecording = true, recordEndEpochMs = null)
-        assertFalse(recordingSpan(growing, nowMs, 3_600_000L).seekable)
+        val growingSpan = recordingSpan(growing, span.startMs + 600_000L, 600_000L)
+        assertTrue(growingSpan.seekable)
+        assertEquals(span.startMs + 600_000L, growingSpan.endMs)
+        assertEquals(300_000L, growingSpan.byteAt(span.startMs + 300_000L))
+        assertFalse(recordingSpan(growing, nowMs, 0L).seekable)
         assertFalse(recordingSpan(finished, nowMs, 0L).seekable)
     }
 

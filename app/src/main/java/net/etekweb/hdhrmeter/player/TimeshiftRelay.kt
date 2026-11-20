@@ -2,6 +2,7 @@ package net.etekweb.hdhrmeter.player
 
 import net.etekweb.hdhrmeter.data.TIMESHIFT_LIVE_BYTE
 import net.etekweb.hdhrmeter.data.StreamFailure
+import net.etekweb.hdhrmeter.data.TimeshiftSocket
 import net.etekweb.hdhrmeter.data.consumeHttpHeaders
 import net.etekweb.hdhrmeter.data.contentRangeStart
 import net.etekweb.hdhrmeter.data.liveStreamFailure
@@ -64,18 +65,31 @@ class TimeshiftRelay : Closeable {
         }
     }
 
-    fun arm(url: String, range: String, joinLive: Boolean, requestedWallMs: Long): Int =
-        armStream(url, range, joinLive, requestedWallMs)
+    fun arm(
+        url: String,
+        range: String,
+        joinLive: Boolean,
+        requestedWallMs: Long,
+        followRecording: Boolean = false,
+        recordEndMs: Long? = null,
+    ): Int = armStream(url, range, joinLive, requestedWallMs, followRecording, recordEndMs)
 
     fun armDirect(url: String): String {
         val gen = armStream(url, range = null, joinLive = false, requestedWallMs = 0L)
         return "$localUrl/$gen"
     }
 
-    private fun armStream(url: String, range: String?, joinLive: Boolean, requestedWallMs: Long): Int =
+    private fun armStream(
+        url: String,
+        range: String?,
+        joinLive: Boolean,
+        requestedWallMs: Long,
+        followRecording: Boolean = false,
+        recordEndMs: Long? = null,
+    ): Int =
         synchronized(lock) {
             val gen = generation.incrementAndGet()
-            armed = Armed(url, range, joinLive, requestedWallMs, gen)
+            armed = Armed(url, range, joinLive, requestedWallMs, gen, followRecording, recordEndMs)
             _snapshot.value = RelaySnapshot(generation = gen)
             closeActive()
             gen
@@ -177,33 +191,39 @@ class TimeshiftRelay : Closeable {
                 }
             }
             if (upstream.extra.isNotEmpty()) sniff?.add(upstream.extra, upstream.extra.size, report)
-            copy(upstream.socket, output, request, upstream.extra.size.toLong(), sniff, report)
+            val sent = copy(upstream, output, request, 0L, sniff, report)
+            if (request.followRecording && sent != null && sent > 0L) {
+                upstream.close()
+                followRecording(request, start, sent, output)
+            }
             sniff?.finish(report)
         } finally {
             runCatching { socket.close() }
             synchronized(lock) {
-                if (upstreamSocket === socket) upstreamSocket = null
+                if (generation.get() == request.generation) upstreamSocket = null
             }
         }
     }
 
     private fun copy(
-        upstream: Socket,
+        upstream: TimeshiftSocket,
         output: java.io.OutputStream,
         request: Armed,
         already: Long,
         sniff: InterlaceSniff?,
         report: (Boolean) -> Unit,
-    ) {
-        val input = upstream.getInputStream()
+    ): Long? {
+        val input = upstream.socket.getInputStream()
         val buffer = ByteArray(16 * 1024)
-        var sent = already
-        var published = already
+        var sent = already + upstream.extra.size
+        var published = sent
+        val length = if (request.followRecording) upstream.headers["content-length"]?.toLongOrNull() else null
+        var remaining = length?.minus(upstream.extra.size)?.coerceAtLeast(0L) ?: Long.MAX_VALUE
         val gen = request.generation
         try {
-            while (running && generation.get() == gen) {
+            while (running && generation.get() == gen && remaining > 0L) {
                 val read = try {
-                    input.read(buffer)
+                    input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
                 } catch (_: IOException) {
                     publishFailure(request, StreamFailure("The live stream connection was interrupted.", null))
                     break
@@ -213,15 +233,52 @@ class TimeshiftRelay : Closeable {
                 output.flush()
                 sniff?.add(buffer, read, report)
                 sent += read
+                remaining -= read
                 if (sent - published >= 32 * 1024) {
                     publishBytes(gen, sent)
                     published = sent
                 }
             }
+            return sent
         } catch (_: Exception) {
             // The player paused long enough to be seeked, or it left the channel.
+            return null
         } finally {
             publishBytes(gen, sent)
+        }
+    }
+
+    /** Some engines close each response at its snapshot EOF. Append newly written bytes in place. */
+    private fun followRecording(request: Armed, start: Long, initialSent: Long, output: java.io.OutputStream) {
+        var sent = initialSent
+        var lastData = System.currentTimeMillis()
+        while (running && generation.get() == request.generation) {
+            val offset = start + sent
+            val socket = synchronized(lock) {
+                if (generation.get() != request.generation) return
+                Socket().also { upstreamSocket = it }
+            }
+            val next = runCatching {
+                openTimeshift(request.url, "bytes=$offset-", stream = true, socket = socket)
+            }.getOrNull()
+            var grew = false
+            next?.use {
+                if (generation.get() != request.generation) return
+                if (it.status in 200..299 && contentRangeStart(it.headers["content-range"]) == offset) {
+                    if (it.extra.isNotEmpty()) output.write(it.extra)
+                    val forwarded = copy(it, output, request, sent, null) {} ?: return
+                    if (forwarded > sent) {
+                        sent = forwarded
+                        lastData = System.currentTimeMillis()
+                        grew = true
+                    }
+                }
+            }
+            val now = System.currentTimeMillis()
+            if (!grew) {
+                if (now >= lastData + 12_000L || (request.recordEndMs != null && now >= request.recordEndMs)) return
+                Thread.sleep(500L)
+            }
         }
     }
 
@@ -291,6 +348,8 @@ class TimeshiftRelay : Closeable {
         val joinLive: Boolean,
         val requestedWallMs: Long,
         val generation: Int,
+        val followRecording: Boolean,
+        val recordEndMs: Long?,
     )
 
     private companion object {

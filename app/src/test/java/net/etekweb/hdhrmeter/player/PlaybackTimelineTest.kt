@@ -8,6 +8,16 @@ import org.junit.Test
 
 class PlaybackTimelineTest {
     @Test
+    fun recordingClockKeepsItsPositionWhenTheMediaTimestampResets() {
+        val picture = PictureClock(monotonic = true)
+        picture.start(nowMs = 10_000L, mediaTimeMs = 1_000L, adoptMedia = true)
+        assertEquals(2_000L, picture.advance(11_000L, 2_000L, advancing = true))
+        assertEquals(2_000L, picture.advance(12_000L, 0L, advancing = true))
+        assertEquals(3_000L, picture.advance(13_000L, 1_000L, advancing = true))
+        assertEquals(3_000L, picture.advance(14_000L, 1_000L, advancing = false))
+    }
+
+    @Test
     fun availableStartIsTheLaterOfTheShowAndTheBuffer() {
         assertEquals(1_000_000L, availableRecordingStartMs(1_000_000L, 500_000L))
         assertEquals(1_500_000L, availableRecordingStartMs(1_000_000L, 1_500_000L))

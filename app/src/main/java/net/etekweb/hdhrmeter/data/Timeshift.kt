@@ -81,29 +81,57 @@ internal data class RecordingProbe(
     val totalBytes: Long = 0,
     /** Range header the player should send. Null when the engine rejected Range. */
     val range: String? = null,
+    val sampledAtMs: Long = 0L,
 )
 
-internal fun probeRecording(url: String): RecordingProbe {
+internal fun probeRecording(url: String, growing: Boolean = false): RecordingProbe {
     val ranged = openRecordingProbe(url, "bytes=0-")
-    if (ranged.failure == null) return ranged.copy(range = "bytes=0-")
+    if (ranged.failure == null) {
+        if (!growing) return ranged.copy(range = "bytes=0-")
+        if (ranged.totalBytes > 1L && ranged.range != null) return ranged
+        // A growing stream can omit a total. Ask for the edge as with DVR timeshift.
+        val edge = openRecordingProbe(url, "bytes=$TIMESHIFT_LIVE_BYTE-", edge = true)
+        return if (edge.totalBytes > 1L) edge.copy(range = "bytes=0-") else ranged
+    }
     if (ranged.failure.hdhrCode != null) return ranged
     return openRecordingProbe(url, null)
 }
 
-private fun openRecordingProbe(url: String, range: String?): RecordingProbe {
+private fun openRecordingProbe(url: String, range: String?, edge: Boolean = false): RecordingProbe {
     val opened = try {
         openTimeshift(url, range, stream = false)
     } catch (_: Exception) {
         return RecordingProbe(failure = StreamFailure("Could not open the recording.", null))
     }
     opened.use { head ->
+        val now = System.currentTimeMillis()
+        val contentRange = head.headers["content-range"]
+        if (edge && head.status == 416) {
+            return RecordingProbe(totalBytes = contentRangeTotal(contentRange) ?: 0L, sampledAtMs = now)
+        }
         if (head.status !in 200..299) {
             val code = hdhrErrorCode(head.headers.mapValues { listOf(it.value) }, head.errorBody)
             val message = hdhrErrorMessage(code)
                 ?: "Could not open the recording (HTTP ${head.status})."
             return RecordingProbe(failure = StreamFailure(message, code))
         }
-        return RecordingProbe(totalBytes = recordingFileBytes(head.headers))
+        val start = contentRangeStart(contentRange)
+        val total = if (edge) {
+            start?.takeIf { it in 1L until TIMESHIFT_LIVE_BYTE } ?: 0L
+        } else {
+            recordingFileBytes(head.headers)
+                .takeIf { it > 0L }
+                ?: CONTENT_RANGE_END.find(contentRange.orEmpty())?.groupValues?.get(1)
+                    ?.toLongOrNull()?.takeIf { it < Long.MAX_VALUE }?.plus(1L)
+                ?: 0L
+        }
+        return RecordingProbe(
+            totalBytes = total,
+            range = range?.takeIf {
+                head.status == 206 || start != null || head.headers["accept-ranges"]?.equals("bytes", true) == true
+            },
+            sampledAtMs = now,
+        )
     }
 }
 
@@ -338,5 +366,6 @@ private fun readErrorBody(input: InputStream, extra: ByteArray): String {
 private val CHANNEL_NUMBER = Regex("[0-9A-Za-z._-]+")
 private val CONTENT_RANGE = Regex("""bytes\s+(\d+)\s*-""", RegexOption.IGNORE_CASE)
 private val CONTENT_RANGE_TOTAL = Regex("""/\s*(\d+)\s*$""")
+private val CONTENT_RANGE_END = Regex("""bytes\s+0\s*-\s*(\d+)\s*/\s*\*\s*$""", RegexOption.IGNORE_CASE)
 private const val CR = '\r'.code.toByte()
 private const val LF = '\n'.code.toByte()

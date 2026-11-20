@@ -385,25 +385,25 @@ internal fun recordingResumeOffset(resumeSec: Long?): Long? {
 
 /**
  * True when the recording detail can offer Resume.
- * A file that is still being written cannot be seeked, so it keeps Play from Start.
  */
 internal fun recordingCanResume(recording: Recording): Boolean {
-    if (recording.playUrl.isNullOrBlank() || recording.stillRecording) return false
+    if (recording.playUrl.isNullOrBlank()) return false
     val seconds = recordingResumeOffset(recording.resumeSec) ?: return false
     val start = recording.recordStartEpochMs ?: recording.startEpochMs ?: return false
+    if (recording.stillRecording) return true
     val end = recording.recordEndEpochMs ?: recording.endEpochMs ?: return false
     val durationMs = end - start
     if (durationMs <= 1_000L) return false
     return seconds * 1_000L < durationMs
 }
 
-/** Wall time for a finished file's resume point. Null plays from the start of [span]. */
+/** Wall time for a saved offset in the available recording. */
 internal fun recordingResumeWall(recording: Recording, span: RecordingSpan): Long? {
     if (!span.seekable || !recordingCanResume(recording)) return null
     val seconds = recordingResumeOffset(recording.resumeSec) ?: return null
     val wall = span.startMs + seconds * 1_000L
-    if (wall <= span.startMs || wall >= span.endMs) return null
-    return wall
+    if (wall <= span.startMs || (!recording.stillRecording && wall >= span.endMs)) return null
+    return wall.coerceAtMost(span.endMs)
 }
 
 /**
@@ -461,13 +461,14 @@ internal data class RecordingSpan(
 
 /**
  * Maps a recording onto the clock.
- * A finished file uses its record stop and the measured byte length, so seeks land
- * on the same moment. An in-progress file is still growing, so it plays from the
- * start and the bar follows the picture.
+ * A growing file maps its current length onto the time elapsed since recording started.
  */
 internal fun recordingSpan(recording: Recording, nowMs: Long, totalBytes: Long): RecordingSpan {
     val start = recording.recordStartEpochMs ?: recording.startEpochMs
-    if (!recording.stillRecording) {
+    if (recording.stillRecording) {
+        val origin = start ?: nowMs
+        return RecordingSpan(origin, maxOf(origin + 1L, nowMs), if (start != null) totalBytes else 0L, bounded = true)
+    } else {
         val end = recording.recordEndEpochMs ?: recording.endEpochMs
         if (start != null && end != null && end > start) {
             return RecordingSpan(start, end, totalBytes.coerceAtLeast(0L), bounded = true)

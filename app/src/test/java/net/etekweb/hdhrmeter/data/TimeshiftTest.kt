@@ -122,6 +122,32 @@ class TimeshiftTest {
     }
 
     @Test(timeout = 15_000)
+    fun growingRecordingCanFindTheLiveByteWithoutAKnownLength() {
+        ServerSocket(0, 4, InetAddress.getByName("127.0.0.1")).use { server ->
+            server.soTimeout = 4_000
+            val requests = mutableListOf<String>()
+            val worker = Thread {
+                for (range in listOf("bytes 0-", "bytes 9000-")) {
+                    server.accept().use { client ->
+                        client.soTimeout = 3_000
+                        requests += readUntilHeaders(client)
+                        val response = "HTTP/1.1 206 Partial Content\r\nContent-Range: $range\r\n\r\n"
+                        client.getOutputStream().write(response.toByteArray(Charsets.ISO_8859_1))
+                    }
+                }
+            }
+            worker.isDaemon = true
+            worker.start()
+            val probe = probeRecording("http://127.0.0.1:${server.localPort}/rec/news", growing = true)
+            worker.join(2_000)
+            assertNull(probe.failure)
+            assertEquals(9000L, probe.totalBytes)
+            assertEquals("bytes=0-", probe.range)
+            assertTrue(requests[1].contains("Range: bytes=$TIMESHIFT_LIVE_BYTE-"))
+        }
+    }
+
+    @Test(timeout = 15_000)
     fun probeRecordingKeepsAPlaybackLimit() {
         val server = ServerSocket(0, 4, InetAddress.getByName("127.0.0.1"))
         server.soTimeout = 4_000

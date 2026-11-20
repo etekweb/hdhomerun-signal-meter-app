@@ -137,7 +137,7 @@ internal fun enabledTransportStopsFor(state: UiState): Set<TransportStop> {
     return enabledTransportStops(
         controls = clock.active && state.playbackError == null && !state.tunerReleased,
         timeshift = clock.timeshift,
-        liveButton = !file && (clock.timeshift || !clock.playing),
+        liveButton = if (file) clock.recordingLive && clock.timeshift else clock.timeshift || !clock.playing,
     )
 }
 

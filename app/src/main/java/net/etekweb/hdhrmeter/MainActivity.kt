@@ -286,6 +286,7 @@ class MainActivity : ComponentActivity() {
                                     onOpen = viewModel::openRecording,
                                     onClose = viewModel::closeRecording,
                                     onPlay = viewModel::playRecording,
+                                    onJoinLive = viewModel::joinRecordingLive,
                                     onResume = viewModel::resumeRecording,
                                     onSection = viewModel::selectDvrSection,
                                     onEnsureScheduled = viewModel::ensureScheduled,

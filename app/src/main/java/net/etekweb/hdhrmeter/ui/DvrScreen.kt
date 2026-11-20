@@ -71,6 +71,7 @@ fun DvrScreen(
     onOpen: (String) -> Unit,
     onClose: () -> Unit,
     onPlay: () -> Unit,
+    onJoinLive: () -> Unit,
     onResume: () -> Unit,
     onSection: (DvrSection) -> Unit,
     onEnsureScheduled: () -> Unit,
@@ -93,7 +94,7 @@ fun DvrScreen(
     val scheduled = dvr.scheduled.firstOrNull { it.id == dvr.selectedScheduledId }
     when {
         dvr.section == DvrSection.Recordings && recording != null -> {
-            RecordingDetail(recording, dvr.acting, dvr.actionError, onClose, onPlay, onResume, onDelete)
+            RecordingDetail(recording, dvr.acting, dvr.actionError, onClose, onPlay, onJoinLive, onResume, onDelete)
         }
         dvr.section == DvrSection.Scheduled && scheduled != null -> {
             ScheduledDetail(
@@ -483,6 +484,7 @@ private fun RecordingDetail(
     actionError: String?,
     onClose: () -> Unit,
     onPlay: () -> Unit,
+    onJoinLive: () -> Unit,
     onResume: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -563,6 +565,7 @@ private fun RecordingDetail(
                     enabled = !acting,
                     onResume = onResume,
                     onPlay = onPlay,
+                    onJoinLive = onJoinLive.takeIf { recording.stillRecording },
                 )
             }
             if (!actionError.isNullOrBlank()) {
@@ -586,6 +589,7 @@ private fun RecordingPlayActions(
     enabled: Boolean,
     onResume: () -> Unit,
     onPlay: () -> Unit,
+    onJoinLive: (() -> Unit)?,
 ) {
     Column(
         Modifier.padding(top = 12.dp),
@@ -598,12 +602,17 @@ private fun RecordingPlayActions(
                 Text("Resume")
             }
         }
+        if (onJoinLive != null) {
+            Button(onClick = onJoinLive, enabled = enabled, modifier = Modifier.tvFocusBorder()) {
+                Text("Join Live")
+            }
+        }
         Button(onClick = onPlay, enabled = enabled, modifier = Modifier.tvFocusBorder()) {
-            if (!canResume) {
+            if (!canResume && onJoinLive == null) {
                 Icon(Icons.Filled.PlayArrow, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
             }
-            Text("Play from Start")
+            Text(if (onJoinLive != null) "Start from Beginning" else "Play from Start")
         }
     }
 }

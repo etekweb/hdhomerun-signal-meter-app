@@ -57,6 +57,43 @@ class TimeshiftRelayTest {
     }
 
     @Test(timeout = 15_000)
+    fun growingRecordingContinuesFromTheFirstUnreadByte() {
+        ServerSocket(0, 4, InetAddress.getByName("127.0.0.1")).use { upstream ->
+            upstream.soTimeout = 4_000
+            val worker = Executors.newSingleThreadExecutor()
+            try {
+                val requests = worker.submit<List<String>> {
+                    listOf(
+                        "206 Partial Content\r\nContent-Range: bytes 8000-8004/8005\r\nContent-Length: 5\r\n\r\nFIRST",
+                        "206 Partial Content\r\nContent-Range: bytes 8005-8008/8009\r\nContent-Length: 4\r\n\r\nNEXT",
+                        "416 Range Not Satisfiable\r\nContent-Range: bytes */8009\r\nContent-Length: 0\r\n\r\n",
+                    ).map { response ->
+                        upstream.accept().use { client ->
+                            client.soTimeout = 3_000
+                            val request = readUntilHeaders(client)
+                            client.getOutputStream().write("HTTP/1.1 $response".toByteArray(Charsets.US_ASCII))
+                            request.lineSequence().first { it.startsWith("Range:") }
+                        }
+                    }
+                }
+                TimeshiftRelay().use { relay ->
+                    val url = "http://127.0.0.1:${upstream.localPort}/recorded/play"
+                    relay.arm(url, "bytes=8000-", joinLive = false, requestedWallMs = 50_000L,
+                        followRecording = true, recordEndMs = 1L)
+                    assertTrue(httpGet(relay.localUrl).endsWith("FIRSTNEXT"))
+                    assertEquals(9L, relay.snapshot.value.bytesSent)
+                    assertEquals(
+                        listOf("Range: bytes=8000-", "Range: bytes=8005-", "Range: bytes=8009-"),
+                        requests.get(4, TimeUnit.SECONDS),
+                    )
+                }
+            } finally {
+                worker.shutdownNow()
+            }
+        }
+    }
+
+    @Test(timeout = 15_000)
     fun directTuneRejectsAnOldPlayerRequestAndReportsTheTunerError() {
         ServerSocket(0, 4, InetAddress.getByName("127.0.0.1")).use { upstream ->
             upstream.soTimeout = 4_000
