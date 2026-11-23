@@ -8,8 +8,8 @@ import org.junit.Test
 
 class PlaybackTimelineTest {
     @Test
-    fun recordingClockKeepsItsPositionWhenTheMediaTimestampResets() {
-        val picture = PictureClock(monotonic = true)
+    fun pictureClockKeepsItsPositionWhenTheMediaTimestampResets() {
+        val picture = PictureClock()
         picture.start(nowMs = 10_000L, mediaTimeMs = 1_000L, adoptMedia = true)
         assertEquals(2_000L, picture.advance(11_000L, 2_000L, advancing = true))
         assertEquals(2_000L, picture.advance(12_000L, 0L, advancing = true))
@@ -141,6 +141,50 @@ class PlaybackTimelineTest {
         assertEquals(20_000L, map.positionMs(mediaTimeMs = 50_000L, nowMs = 21_000L))
         assertEquals(20_900L, map.positionMs(mediaTimeMs = 400L, nowMs = 21_000L))
         assertEquals(21_200L, map.positionMs(mediaTimeMs = 700L, nowMs = 21_300L))
+    }
+
+    @Test
+    fun aPausedLiveSkipStartsAtThePictureEvenIfTheRelayReadsAhead() {
+        val map = ratedLiveMap()
+        val pausedAt = map.positionMs(mediaTimeMs = 8_000L, nowMs = 108_000L)
+        assertEquals(108_000L, pausedAt)
+        repeat(20) { index ->
+            val now = 110_000L + index * 1_000L
+            map.noteBytes(8_000_000L + index * 1_500_000L, 8_000L, now, advancing = false)
+            assertEquals(pausedAt, map.positionMs(8_000L, now, advancing = false))
+        }
+        assertTrue(!map.readingLiveEdge)
+        val target = map.shiftTarget(pausedAt + 10_000L, joinLive = false, liveMs = 135_000L)
+        assertEquals(58_000_000L, target?.byte)
+    }
+
+    @Test
+    fun smallSeeksStayNearTheSamePictureWhileOpeningAndAfterAlignment() {
+        val map = ratedLiveMap()
+        val live = 180_000L
+        val targetWall = 130_000L
+        // The target came from a live cap that differed from the startup byte estimate.
+        map.armHold(targetWall, generation = 2, requestedByte = 55_000_000L)
+        assertEquals(targetWall, map.positionMs(8_000L, live))
+        assertEquals(56_000_000L, map.shiftTarget(targetWall + 1_000L, false, live)?.byte)
+        map.noteOpened(55_250_000L, false, targetWall, live, generation = 2)
+        val landed = map.positionMs(0L, live)
+        assertEquals(targetWall + 250L, landed)
+        map.noteBytes(35_000_000L, 8_000L, live + 8_000L)
+        val watching = map.positionMs(8_000L, live + 8_000L)
+        assertEquals(landed + 8_000L, watching)
+        assertEquals(62_250_000L, map.shiftTarget(watching - 1_000L, false, live + 8_000L)?.byte)
+        assertEquals(64_250_000L, map.shiftTarget(watching + 1_000L, false, live + 8_000L)?.byte)
+    }
+
+    private fun ratedLiveMap(): TimeshiftMap {
+        val map = TimeshiftMap()
+        map.noteEdges(oldestByte = 0L, liveByte = 40_000_000L, nowMs = 100_000L)
+        map.noteOpened(40_000_000L, true, 100_000L, 100_000L, generation = 1)
+        map.positionMs(mediaTimeMs = 0L, nowMs = 100_000L)
+        map.noteBytes(2_000_000L, 2_000L, 102_000L)
+        map.noteBytes(4_000_000L, 4_000L, 104_000L)
+        return map
     }
 
     @Test

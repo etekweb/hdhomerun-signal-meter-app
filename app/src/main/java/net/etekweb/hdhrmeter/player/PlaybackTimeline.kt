@@ -64,10 +64,12 @@ internal fun playbackBar(
 }
 
 internal data class ShiftTarget(
-    val range: String,
+    val byte: Long,
     val joinLive: Boolean,
     val requestedWallMs: Long,
-)
+) {
+    val range: String get() = "bytes=$byte-"
+}
 
 /** A restarted LibVLC clock is still near zero for about this long. */
 internal const val FRESH_MEDIA_MS = 1_200L
@@ -89,21 +91,17 @@ private const val MAX_STEP_BYTES = 2_000_000L
  * never comes back through zero after a seek. While the picture is advancing,
  * a stuck media clock is replaced with time actually spent playing.
  */
-internal class PictureClock(private val monotonic: Boolean = false) {
+internal class PictureClock {
     var elapsedMs: Long = 0L
         private set
 
     private var started = false
-    private var followAbsolute = false
-    private var originMedia = 0L
     private var lastWall = 0L
     private var lastMedia = 0L
 
     fun clear() {
         elapsedMs = 0L
         started = false
-        followAbsolute = false
-        originMedia = 0L
         lastWall = 0L
         lastMedia = 0L
     }
@@ -112,8 +110,6 @@ internal class PictureClock(private val monotonic: Boolean = false) {
     fun start(nowMs: Long, mediaTimeMs: Long, adoptMedia: Boolean) {
         val media = mediaTimeMs.coerceAtLeast(0L)
         started = true
-        followAbsolute = adoptMedia && !monotonic
-        originMedia = if (adoptMedia) 0L else media
         lastWall = nowMs
         lastMedia = media
         elapsedMs = if (adoptMedia) media else 0L
@@ -128,15 +124,9 @@ internal class PictureClock(private val monotonic: Boolean = false) {
         lastMedia = media
         if (!advancing || dWall == 0L) return elapsedMs
         val stepSane = dMedia > 0L && dMedia <= dWall + 1_500L
-        if (followAbsolute && stepSane) {
-            elapsedMs = (media - originMedia).coerceAtLeast(0L)
-        } else if (stepSane) {
+        if (stepSane) {
             elapsedMs += dMedia
-        } else if (dMedia <= -500L) {
-            originMedia = media
-            followAbsolute = !monotonic && media <= FRESH_MEDIA_MS
-            if (followAbsolute) elapsedMs = media
-        } else {
+        } else if (dMedia > -500L) {
             elapsedMs += dWall
         }
         return elapsedMs
@@ -164,9 +154,12 @@ internal class TimeshiftMap {
     private var opened = false
     private var hold = false
     private var heldMs = 0L
+    private var heldByte: Long? = null
     private var holdGeneration = -1
     private var openedGeneration = -1
     private var openedAtMs = 0L
+    private var measuringLive = false
+    val readingLiveEdge: Boolean get() = measuringLive && !hold
     private var slopeBytes = -1L
     private var slopeMedia = -1L
     private var slopeWall = -1L
@@ -186,9 +179,11 @@ internal class TimeshiftMap {
         opened = false
         hold = false
         heldMs = nowMs
+        heldByte = null
         holdGeneration = -1
         openedGeneration = -1
         openedAtMs = 0L
+        measuringLive = false
         clearRead()
         clearSlope()
         picture.clear()
@@ -211,9 +206,10 @@ internal class TimeshiftMap {
     }
 
     /** Ignore player time until this seek's stream actually restarts. */
-    fun armHold(wallMs: Long, generation: Int) {
+    fun armHold(wallMs: Long, generation: Int, requestedByte: Long? = null) {
         hold = true
         heldMs = wallMs
+        heldByte = requestedByte
         holdGeneration = generation
         // The previous open's timestamp must not release this hold early.
         openedAtMs = 0L
@@ -232,6 +228,7 @@ internal class TimeshiftMap {
         this.openedAtMs = openedAtMs
         clearRead()
         if (!rated) clearSlope()
+        measuringLive = joinLive
         if (joinLive) {
             anchorByte = actualByte
             anchorMs = openedAtMs
@@ -256,7 +253,9 @@ internal class TimeshiftMap {
             return
         }
         anchorByte = actualByte
-        anchorMs = wallOf(actualByte, requestedWallMs)
+        val targetByte = heldByte?.takeIf { generation == holdGeneration }
+        val correction = if (targetByte != null && rated) ((actualByte - targetByte) / bytesPerMs).toLong() else 0L
+        anchorMs = (requestedWallMs + correction).coerceAtLeast(bufferStartMs)
     }
 
     /**
@@ -268,15 +267,21 @@ internal class TimeshiftMap {
         bytesSent: Long,
         mediaTimeMs: Long,
         nowMs: Long,
-        advancing: Boolean = false,
+        advancing: Boolean = true,
     ) {
-        if (!opened || bytesSent <= 0L) return
+        if (!opened) return
+        if (!advancing) {
+            measuringLive = false
+            if (!rated) clearSlope()
+            return
+        }
+        if (bytesSent <= 0L) return
         rememberRead(bytesSent)
         if (!rated) {
             measureInitial(bytesSent, mediaTimeMs, nowMs)
             return
         }
-        if (advancing) adoptObservedRate()
+        if (measuringLive && !hold) adoptObservedRate()
     }
 
     fun positionMs(mediaTimeMs: Long, nowMs: Long, advancing: Boolean = true): Long {
@@ -302,17 +307,17 @@ internal class TimeshiftMap {
         observedLiveByte: Long? = null,
     ): ShiftTarget? {
         if (joinLive) {
-            return ShiftTarget("bytes=$TIMESHIFT_LIVE_BYTE-", true, liveMs)
+            return ShiftTarget(TIMESHIFT_LIVE_BYTE, true, liveMs)
         }
         // Wall times in a historical buffer are unknown until the rate exists.
         // The oldest byte can belong to the previous program, so it is not a
         // stand-in for "somewhere before live".
         if (!rated && initialLiveByte > bufferStartByte) return null
         if (wallMs <= bufferStartMs + 750L) {
-            return ShiftTarget("bytes=${bufferStartByte.coerceAtLeast(0L)}-", false, bufferStartMs)
+            return ShiftTarget(bufferStartByte, false, bufferStartMs)
         }
         val byte = byteFor(wallMs, liveMs, observedLiveByte) ?: return null
-        return ShiftTarget("bytes=$byte-", false, wallMs)
+        return ShiftTarget(byte, false, wallMs)
     }
 
     /**
@@ -329,7 +334,7 @@ internal class TimeshiftMap {
         val hasHistory = initialLiveByte > bufferStartByte
         if (!rated && hasHistory) {
             if (programStartMs != null) return null
-            return ShiftTarget("bytes=${bufferStartByte.coerceAtLeast(0L)}-", false, bufferStartMs)
+            return ShiftTarget(bufferStartByte, false, bufferStartMs)
         }
         val wall = availableRecordingStartMs(programStartMs, bufferStartMs)
         return shiftTarget(wall, joinLive = false, liveMs, observedLiveByte)
@@ -354,14 +359,14 @@ internal class TimeshiftMap {
     }
 
     /**
-     * After the picture has been playing, seek from the bytes actually read.
-     * A rate frozen at startup is otherwise applied to the whole watch, so a
-     * forward skip lands back at the byte where this segment opened.
+     * Anchor to the byte for the current picture or to the pending seek.
+     * The relay can read ahead while VLC is paused or opening buffered footage.
      */
     private fun locate(wallMs: Long, liveMs: Long, rate: Double): Pair<Long, Long> {
-        if (picture.elapsedMs > 0L) {
-            val pictureWall = anchorMs + picture.elapsedMs
-            val origin = pictureByte(rate)
+        val pendingByte = heldByte?.takeIf { hold && openedGeneration != holdGeneration }
+        if (pendingByte != null || (opened && (!hold || openedGeneration == holdGeneration))) {
+            val pictureWall = if (pendingByte != null) heldMs else anchorMs + picture.elapsedMs
+            val origin = pendingByte ?: (anchorByte + (picture.elapsedMs * rate).toLong())
             val estimated = origin + ((wallMs - pictureWall).toDouble() * rate).toLong()
             val estimatedLive = origin +
                 ((liveMs - pictureWall).coerceAtLeast(0L).toDouble() * rate).toLong()
@@ -371,22 +376,6 @@ internal class TimeshiftMap {
             ((liveMs - initialLiveMs).coerceAtLeast(0L).toDouble() * rate).toLong()
         val estimated = estimatedLive - ((liveMs - wallMs).coerceAtLeast(0L).toDouble() * rate).toLong()
         return estimated to estimatedLive
-    }
-
-    private fun pictureByte(rate: Double): Long {
-        val elapsed = picture.elapsedMs
-        val predicted = anchorByte + (elapsed.toDouble() * rate).toLong()
-        val played = playedBytes()
-        if (elapsed < 2_000L || played <= 0L) return predicted.coerceAtLeast(bufferStartByte)
-        val read = anchorByte + played
-        val observed = played.toDouble() / elapsed.toDouble()
-        if (observed < MIN_RATE_BYTES_PER_MS || observed > MAX_RATE_BYTES_PER_MS) {
-            return predicted.coerceAtLeast(bufferStartByte)
-        }
-        val cache = (observed * READ_AHEAD_MS).toLong()
-        val gap = read - predicted
-        if (gap > cache) return (read - cache).coerceAtLeast(bufferStartByte)
-        return predicted.coerceIn(bufferStartByte, read.coerceAtLeast(bufferStartByte))
     }
 
     private fun measureInitial(bytesSent: Long, mediaTimeMs: Long, nowMs: Long) {
@@ -472,11 +461,5 @@ internal class TimeshiftMap {
         slopeBytes = -1L
         slopeMedia = -1L
         slopeWall = -1L
-    }
-
-    private fun wallOf(byte: Long, requestedWallMs: Long): Long {
-        if (bytesPerMs <= 0.0) return requestedWallMs.coerceAtLeast(bufferStartMs)
-        val delta = (byte - bufferStartByte).coerceAtLeast(0L)
-        return bufferStartMs + (delta / bytesPerMs).toLong()
     }
 }

@@ -27,7 +27,7 @@ internal class RecordingPlay : Closeable {
     private var openedWall = 0L
     private var openedByte = 0L
     private var openedRate = 0.0
-    private val picture = PictureClock(monotonic = true)
+    private val picture = PictureClock()
     private var growing = false
     private var recordEndMs: Long? = null
     private var finishedEdgeMs: Long? = null

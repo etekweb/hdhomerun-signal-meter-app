@@ -75,9 +75,10 @@ class PlaybackShift : Closeable {
             )
         }
         if (snap.opened) map.noteBytes(snap.bytesSent, mediaTimeMs, nowMs, advancing)
+        val start = map.bufferStartMs.coerceAtMost(nowMs)
         return ShiftSample(
-            bufferStartMs = map.bufferStartMs,
-            positionMs = map.positionMs(mediaTimeMs, nowMs, advancing),
+            bufferStartMs = start,
+            positionMs = map.positionMs(mediaTimeMs, nowMs, advancing).coerceIn(start, nowMs),
             liveMs = nowMs,
         )
     }
@@ -112,7 +113,7 @@ class PlaybackShift : Closeable {
     /** File end while this session is still reading the live edge. */
     private fun observedLiveByte(): Long? {
         val snap = relay.snapshot.value
-        if (!snap.opened || !snap.joinLive) return null
+        if (!snap.opened || !snap.joinLive || !map.readingLiveEdge) return null
         val byte = snap.startByte + snap.bytesSent.coerceAtLeast(0L)
         return byte.takeIf { it > 0L }
     }
@@ -121,7 +122,7 @@ class PlaybackShift : Closeable {
         val url = upstream ?: return false
         if (target == null) return false
         val generation = relay.arm(url, target.range, target.joinLive, target.requestedWallMs)
-        map.armHold(target.requestedWallMs, generation)
+        map.armHold(target.requestedWallMs, generation, target.byte.takeUnless { target.joinLive })
         return true
     }
 }

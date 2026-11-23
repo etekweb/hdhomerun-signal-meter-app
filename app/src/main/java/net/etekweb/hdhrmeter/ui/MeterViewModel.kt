@@ -56,8 +56,6 @@ import net.etekweb.hdhrmeter.player.PlaybackShift
 import net.etekweb.hdhrmeter.player.RecordingPlay
 import net.etekweb.hdhrmeter.player.VideoStats
 import net.etekweb.hdhrmeter.player.accumulateSkip
-import net.etekweb.hdhrmeter.player.availableRecordingStartMs
-import net.etekweb.hdhrmeter.player.settleSkipLanding
 import net.etekweb.hdhrmeter.player.playbackFailure
 import org.videolan.libvlc.util.VLCVideoLayout
 import kotlinx.coroutines.Dispatchers
@@ -374,8 +372,6 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private var playGeneration = 0
     private var hopGeneration = 0
     private var skipGeneration = 0
-    /** Last seek, until a clock sample shows that picture. Cleared in [publishClock]. */
-    private var skipLandedMs: Long? = null
     private var tunerGeneration = 0
     private var probeGeneration = 0
     private var lineupGeneration = 0
@@ -1742,14 +1738,12 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         if (!shift.active || !showClock || state.playbackError != null || state.tunerReleased) return
         if (deltaMs == 0L) return
         val clock = state.playbackClock
-        val seekStart = availableRecordingStartMs(playingProgram()?.startEpochMs, clock.bufferStartMs)
-        val seekEnd = maxOf(clock.liveMs, seekStart)
         val pending = accumulateSkip(
             pending = state.pendingSkip,
-            positionMs = skipOrigin(clock.positionMs),
+            positionMs = clock.positionMs,
             deltaMs = deltaMs,
-            seekStartMs = seekStart,
-            seekEndMs = seekEnd,
+            seekStartMs = clock.bufferStartMs,
+            seekEndMs = clock.liveMs,
         )
         if (pending != null && !canSeekWall(pending.targetMs)) return
         if (pending == null && state.pendingSkip == null) return
@@ -2298,8 +2292,8 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         if (!shift.canSeekAvailableStart(programStart, liveMs)) return
         engine.expectRestart()
         if (!shift.seekAvailableStart(programStart, liveMs)) return
-        skipLandedMs = availableRecordingStartMs(programStart, shift.bufferStartMs)
         engine.play(shift.localUrl, keepPicture = true)
+        publishClock()
     }
 
     private fun seekShift(wallMs: Long, joinLive: Boolean) {
@@ -2307,19 +2301,8 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         if (!shift.canSeek(wallMs, joinLive, live)) return
         engine.expectRestart()
         if (!shift.seek(wallMs, joinLive, live)) return
-        skipLandedMs = if (joinLive) live else wallMs
         engine.play(shift.localUrl, keepPicture = true)
-    }
-
-    /**
-     * Position to skip from. A seek the clock has not published yet still counts.
-     * [publishClock] clears that landing once the playhead shows it, so watching
-     * past it does not drag the next skip back there.
-     */
-    private fun skipOrigin(positionMs: Long): Long {
-        val landed = settleSkipLanding(positionMs, skipLandedMs)
-        skipLandedMs = landed
-        return landed ?: positionMs
+        publishClock()
     }
 
     private fun ensureClock() {
@@ -2343,9 +2326,6 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         val media = engine.transport.value
         val clock = if (shift.active) {
             val sample = shift.sample(media.mediaTimeMs, now, media.playing)
-            // Drop the remembered seek once this sample is showing it. A later
-            // skip then starts from the playhead, not from that landing.
-            skipLandedMs = settleSkipLanding(sample.positionMs, skipLandedMs)
             PlaybackClock(
                 active = true,
                 timeshift = true,
@@ -2445,7 +2425,6 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         skipGeneration++
         skipJob?.cancel()
         skipJob = null
-        skipLandedMs = null
         if (_ui.value.pendingSkip != null) {
             _ui.update { it.copy(pendingSkip = null) }
         }
