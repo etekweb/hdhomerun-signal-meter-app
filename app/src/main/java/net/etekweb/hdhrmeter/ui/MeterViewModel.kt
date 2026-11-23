@@ -2624,7 +2624,6 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         val now = System.currentTimeMillis()
         val media = engine.transport.value
         val sample = recordingPlay.sample(media.mediaTimeMs, now, media.playing)
-        skipLandedMs = settleSkipLanding(sample.positionMs, skipLandedMs)
         _ui.update {
             it.copy(
                 playbackClock = PlaybackClock(
@@ -2640,12 +2639,12 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun seekRecording(wallMs: Long) {
+    private fun seekRecording(wallMs: Long, skip: PendingSkip? = null) {
         val recording = (_ui.value.screen as? Screen.PlayRecording)?.recording ?: return
         if (!recordingPlay.seekable) return
         recordingSeekJob?.cancel()
         if (!recording.stillRecording) {
-            reopenRecording(wallMs)
+            reopenRecording(wallMs, skip = skip)
             return
         }
         val url = recording.playUrl ?: return
@@ -2658,15 +2657,24 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             } else {
                 null
             }
-            reopenRecording(wallMs, span)
+            reopenRecording(wallMs, span, skip)
         }
     }
 
-    private fun reopenRecording(wallMs: Long, span: RecordingSpan? = null) {
+    private fun reopenRecording(wallMs: Long, span: RecordingSpan? = null, skip: PendingSkip? = null) {
+        var appliedSkip = skip
+        if (skip != null) {
+            val state = _ui.value
+            if (state.pendingSkip != skip) return
+            val position = state.playbackClock.positionMs
+            // Playback can pass the original target while the DVR answers the size probe.
+            if (skip.deltaMs > 0L && position >= skip.targetMs) appliedSkip = skip.copy(anchorMs = position)
+            _ui.update { it.copy(pendingSkip = null) }
+        }
         engine.expectRestart()
-        val landed = recordingPlay.seek(wallMs, span) ?: return
-        skipLandedMs = landed
+        recordingPlay.seek(appliedSkip?.targetMs ?: wallMs, span, appliedSkip) ?: return
         engine.play(recordingPlay.localUrl, keepPicture = true)
+        publishRecordingClock()
     }
 
     private fun skipRecording(deltaMs: Long) {
@@ -2677,7 +2685,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         val clock = state.playbackClock
         val pending = accumulateSkip(
             pending = state.pendingSkip,
-            positionMs = skipOrigin(clock.positionMs),
+            positionMs = clock.positionMs,
             deltaMs = deltaMs,
             seekStartMs = clock.bufferStartMs,
             seekEndMs = clock.liveMs,
@@ -2686,6 +2694,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         cancelChannelHop()
         val generation = ++skipGeneration
         skipJob?.cancel()
+        recordingSeekJob?.cancel()
         if (pending == null) {
             _ui.update { current ->
                 if (current.pendingSkip == null) current else current.copy(pendingSkip = null)
@@ -2697,16 +2706,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             delay(SKIP_SETTLE_MS)
             if (generation != skipGeneration) return@launch
             val skip = _ui.value.pendingSkip ?: return@launch
-            if (generation != skipGeneration) return@launch
-            _ui.update { current ->
-                if (generation != skipGeneration || current.pendingSkip == null) {
-                    current
-                } else {
-                    current.copy(pendingSkip = null)
-                }
-            }
-            if (generation != skipGeneration) return@launch
-            seekRecording(skip.targetMs)
+            seekRecording(skip.targetMs, skip)
         }
     }
 

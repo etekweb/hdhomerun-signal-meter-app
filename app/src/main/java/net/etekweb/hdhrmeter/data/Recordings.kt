@@ -5,7 +5,6 @@ import org.json.JSONObject
 import java.net.URI
 import java.text.DecimalFormatSymbols
 import java.util.Locale
-import kotlin.math.roundToLong
 
 /**
  * One finished or in-progress file on an HDHomeRun record engine.
@@ -447,6 +446,7 @@ internal data class RecordingSpan(
     val bounded: Boolean,
 ) {
     val seekable: Boolean get() = bounded && totalBytes > 1L && endMs > startMs
+    val bytesPerMs: Double get() = if (seekable) totalBytes.toDouble() / (endMs - startMs) else 0.0
 
     /** Byte offset for [wallMs]. The last byte is kept so a seek to the end still opens. */
     fun byteAt(wallMs: Long): Long {
@@ -456,12 +456,6 @@ internal data class RecordingSpan(
         if (into >= span) return totalBytes - 1L
         val byte = (into.toDouble() / span.toDouble() * totalBytes.toDouble()).toLong()
         return byte.coerceIn(0L, totalBytes - 1L)
-    }
-
-    fun wallAt(byteOffset: Long): Long {
-        if (!seekable) return startMs
-        val fraction = (byteOffset.toDouble() / totalBytes.toDouble()).coerceIn(0.0, 1.0)
-        return startMs + ((endMs - startMs) * fraction).roundToLong()
     }
 }
 
@@ -473,7 +467,8 @@ internal fun recordingSpan(recording: Recording, nowMs: Long, totalBytes: Long):
     val start = recording.recordStartEpochMs ?: recording.startEpochMs
     if (recording.stillRecording) {
         val origin = start ?: nowMs
-        return RecordingSpan(origin, maxOf(origin + 1L, nowMs), if (start != null) totalBytes else 0L, bounded = true)
+        val recordedThrough = minOf(nowMs, recording.recordEndEpochMs ?: nowMs)
+        return RecordingSpan(origin, maxOf(origin + 1L, recordedThrough), if (start != null) totalBytes else 0L, bounded = true)
     } else {
         val end = recording.recordEndEpochMs ?: recording.endEpochMs
         if (start != null && end != null && end > start) {

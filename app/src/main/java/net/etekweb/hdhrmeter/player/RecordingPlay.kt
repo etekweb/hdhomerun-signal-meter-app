@@ -2,6 +2,7 @@ package net.etekweb.hdhrmeter.player
 
 import net.etekweb.hdhrmeter.data.RecordingSpan
 import java.io.Closeable
+import kotlin.math.roundToLong
 
 internal data class RecordingSample(
     val startMs: Long,
@@ -21,7 +22,11 @@ internal class RecordingPlay : Closeable {
     private var hold = false
     private var holdGeneration = -1
     private var holdWall = 0L
+    private var holdByte = 0L
+    private var holdRate = 0.0
     private var openedWall = 0L
+    private var openedByte = 0L
+    private var openedRate = 0.0
     private val picture = PictureClock(monotonic = true)
     private var growing = false
     private var recordEndMs: Long? = null
@@ -51,13 +56,19 @@ internal class RecordingPlay : Closeable {
         finishedEdgeMs = null
         hasPlayed = false
         val wall = if (window.seekable) clampSeek(startWallMs) else window.startMs
-        return open(
-            url, wall, if (wall > window.startMs) "bytes=${window.byteAt(wall)}-" else range.orEmpty(),
-            resume = resume && window.seekable,
-        )
+        val byte = window.byteAt(wall)
+        val initialRange = if (byte > 0L) "bytes=$byte-" else range.orEmpty()
+        return open(url, wall, byte, initialRange, resume = resume && window.seekable)
     }
 
-    private fun open(url: String, wall: Long, range: String, resume: Boolean = false): Long {
+    private fun open(
+        url: String,
+        wall: Long,
+        byte: Long,
+        range: String = "bytes=$byte-",
+        resume: Boolean = false,
+        rate: Double = span.bytesPerMs,
+    ): Long {
         // Allow packet/keyframe alignment while rejecting a jump to a different part of the file.
         val resumeBytes = if (resume) span.byteAt(wall - 3_000L)..span.byteAt(wall + 3_000L) else null
         val generation = relay.arm(
@@ -72,6 +83,8 @@ internal class RecordingPlay : Closeable {
         hold = true
         holdGeneration = generation
         holdWall = wall
+        holdByte = byte
+        holdRate = rate
         return wall
     }
 
@@ -102,7 +115,10 @@ internal class RecordingPlay : Closeable {
             hold = false
             hasPlayed = true
             picture.start(nowMs, media, adoptMedia = fresh)
-            openedWall = if (snap.startByte == span.byteAt(holdWall)) holdWall else span.wallAt(snap.startByte)
+            openedByte = snap.startByte
+            openedRate = holdRate
+            val alignmentMs = if (openedRate > 0.0) ((openedByte - holdByte) / openedRate).roundToLong() else 0L
+            openedWall = holdWall + alignmentMs
             return placed(openedWall + picture.elapsedMs, nowMs)
         }
         val elapsed = picture.advance(nowMs, media, advancing)
@@ -110,14 +126,34 @@ internal class RecordingPlay : Closeable {
     }
 
     /** Lands on [wallMs]. Returns the clamped clock time, or null when this file cannot be seeked. */
-    fun seek(wallMs: Long, refreshedSpan: RecordingSpan? = null): Long? {
+    fun seek(wallMs: Long, refreshedSpan: RecordingSpan? = null, skip: PendingSkip? = null): Long? {
         val url = upstream ?: return null
-        if (refreshedSpan?.seekable == true) {
-            span = finishedEdgeMs?.let { refreshedSpan.copy(endMs = it) } ?: refreshedSpan
+        if (refreshedSpan?.seekable == true && refreshedSpan.totalBytes >= span.totalBytes) {
+            // A file that gained no bytes still describes the same duration.
+            val refreshedEnd = finishedEdgeMs ?: if (refreshedSpan.totalBytes == span.totalBytes) {
+                minOf(span.endMs, refreshedSpan.endMs)
+            } else {
+                refreshedSpan.endMs
+            }
+            span = refreshedSpan.copy(endMs = refreshedEnd)
         }
         if (!span.seekable) return null
-        val wall = clampSeek(wallMs)
-        return open(url, wall, "bytes=${span.byteAt(wall)}-")
+        if (skip == null) {
+            val wall = clampSeek(wallMs)
+            return open(url, wall, span.byteAt(wall))
+        }
+
+        // Updating the file size can change its time-to-byte scale. Keep the
+        // current picture anchored to the connection that is playing it.
+        val rate = if (hold) holdRate else openedRate
+        if (rate <= 0.0) return null
+        val anchorByte = if (hold) holdByte else openedByte + ((skip.anchorMs - openedWall) * rate).roundToLong()
+        val step = (skip.deltaMs * rate).roundToLong()
+        val maxByte = span.byteAt(clampSeek(Long.MAX_VALUE))
+        val byte = (anchorByte + step).coerceIn(0L, maxByte)
+        if ((skip.deltaMs > 0L && byte <= anchorByte) || (skip.deltaMs < 0L && byte >= anchorByte)) return null
+        val landed = if (byte == 0L) span.startMs else skip.anchorMs + ((byte - anchorByte) / rate).roundToLong()
+        return open(url, landed, byte, rate = rate)
     }
 
     private fun clampSeek(wallMs: Long): Long {

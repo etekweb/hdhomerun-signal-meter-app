@@ -210,6 +210,9 @@ class RecordingsTest {
         assertTrue(growingSpan.seekable)
         assertEquals(span.startMs + 600_000L, growingSpan.endMs)
         assertEquals(300_000L, growingSpan.byteAt(span.startMs + 300_000L))
+        val stale = recordingSpan(finished.copy(stillRecording = true), nowMs, span.totalBytes)
+        assertEquals(span.endMs, stale.endMs)
+        assertEquals(span.byteAt(span.startMs + 1_800_000L), stale.byteAt(span.startMs + 1_800_000L))
         assertFalse(recordingSpan(growing, nowMs, 0L).seekable)
         assertFalse(recordingSpan(finished, nowMs, 0L).seekable)
     }

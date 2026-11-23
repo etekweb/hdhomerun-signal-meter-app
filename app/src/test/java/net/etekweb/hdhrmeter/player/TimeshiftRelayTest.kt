@@ -100,6 +100,54 @@ class TimeshiftRelayTest {
     }
 
     @Test(timeout = 15_000)
+    fun forwardSkipsStayAnchoredToPlaybackWhenTheRecordingStopsGrowing() {
+        ServerSocket(0, 4, InetAddress.getByName("127.0.0.1")).use { upstream ->
+            upstream.soTimeout = 4_000
+            val worker = Executors.newSingleThreadExecutor()
+            try {
+                val requests = worker.submit<List<String>> {
+                    listOf(0L, 10_400_000L, 15_900_000L).map { actualByte ->
+                        upstream.accept().use { socket ->
+                            socket.soTimeout = 3_000
+                            val request = readUntilHeaders(socket)
+                            val response = "HTTP/1.1 206 Partial Content\r\n" +
+                                "Content-Range: bytes $actualByte-\r\nContent-Length: 0\r\n\r\n"
+                            socket.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
+                            request.lineSequence().first { it.startsWith("Range:") }
+                        }
+                    }
+                }
+                RecordingPlay().use { player ->
+                    val url = "http://127.0.0.1:${upstream.localPort}/recorded/play"
+                    val start = 100_000L
+                    val initial = RecordingSpan(start, start + 100_000L, 10_000_000L, bounded = true)
+                    val lateProbe = RecordingSpan(start, start + 400_000L, 20_000_000L, bounded = true)
+                    player.begin(url, initial, "bytes=0-", start, growing = true, recordEndMs = null)
+                    httpGet(player.localUrl)
+                    player.sample(0L, 1_000_000L, advancing = true)
+                    val beforeFirstSkip = player.sample(90_000L, 1_090_000L, advancing = true)
+                    val first = PendingSkip(beforeFirstSkip.positionMs, 10_000L)
+                    assertEquals(start + 100_000L, player.seek(first.targetMs, lateProbe, first))
+                    httpGet(player.localUrl)
+                    val firstLanding = player.sample(0L, 1_091_000L, advancing = true)
+                    assertEquals(start + 104_000L, firstLanding.positionMs)
+
+                    val beforeNextSkip = player.sample(45_000L, 1_136_000L, advancing = true)
+                    val next = PendingSkip(beforeNextSkip.positionMs, 10_000L)
+                    assertEquals(start + 159_000L, player.seek(next.targetMs, lateProbe.copy(endMs = start + 450_000L), next))
+                    httpGet(player.localUrl)
+                    assertEquals(
+                        listOf("Range: bytes=0-", "Range: bytes=10000000-", "Range: bytes=15900000-"),
+                        requests.get(4, TimeUnit.SECONDS),
+                    )
+                }
+            } finally {
+                worker.shutdownNow()
+            }
+        }
+    }
+
+    @Test(timeout = 15_000)
     fun growingRecordingContinuesFromTheFirstUnreadByte() {
         ServerSocket(0, 4, InetAddress.getByName("127.0.0.1")).use { upstream ->
             upstream.soTimeout = 4_000
